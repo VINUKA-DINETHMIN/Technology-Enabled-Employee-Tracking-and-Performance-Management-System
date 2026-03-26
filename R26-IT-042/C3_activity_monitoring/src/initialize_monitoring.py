@@ -1,17 +1,20 @@
 """
-R26-IT-042 — Component 3: Activity Monitoring
+R26-IT-042 — C3: Activity Monitoring
 C3_activity_monitoring/src/initialize_monitoring.py
 
 Orchestrates all C3 sub-trackers: keyboard, mouse, app usage,
-idle detection, anomaly engine, screenshot trigger, and break manager.
+idle detection, anomaly engine, activity logger, break manager,
+and screenshot trigger.
 
-Called by main.py in a background thread.  Runs until shutdown_event is set.
+Called by main.py in a background thread. Runs until shutdown_event is set.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+import uuid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,10 @@ def start_monitoring(
     db_client=None,
     alert_sender=None,
     shutdown_event: Optional[threading.Event] = None,
+    session_id: Optional[str] = None,
+    location_mode: str = "unknown",
+    wifi_ssid_match: bool = False,
+    face_liveness_score: float = 1.0,
 ) -> None:
     """
     Start all C3 activity monitoring sub-components.
@@ -36,14 +43,164 @@ def start_monitoring(
         AlertSender instance from common/alerts.py.
     shutdown_event:
         threading.Event — monitored to exit all loops cleanly.
+    session_id:
+        Current session UUID. Generated if not provided.
+    location_mode:
+        "office" | "home" | "unknown"
+    wifi_ssid_match:
+        Whether the current WiFi SSID matches the known office network.
+    face_liveness_score:
+        Liveness score from C2 (passed at login).
     """
     logger.info("C3 activity monitoring starting for user: %s", user_id)
 
     if shutdown_event is None:
         shutdown_event = threading.Event()
 
-    # TODO: start sub-trackers here (keyboard, mouse, app, idle, anomaly, screenshot, break)
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+
+    session_start = time.perf_counter()
+
+    # ── Import sub-components ─────────────────────────────────────────
+    try:
+        from C3_activity_monitoring.src.keyboard_tracker import KeyboardTracker
+        from C3_activity_monitoring.src.mouse_tracker import MouseTracker
+        from C3_activity_monitoring.src.app_usage_monitor import AppUsageMonitor
+        from C3_activity_monitoring.src.idle_detector import IdleDetector
+        from C3_activity_monitoring.src.feature_extractor import FeatureExtractor
+        from C3_activity_monitoring.src.anomaly_engine import AnomalyEngine
+        from C3_activity_monitoring.src.offline_queue import OfflineQueue
+        from C3_activity_monitoring.src.activity_logger import ActivityLogger
+        from C3_activity_monitoring.src.screenshot_trigger import ScreenshotTrigger
+        from C3_activity_monitoring.src.break_manager import BreakManager
+    except ImportError as exc:
+        logger.error("C3 sub-component import failed: %s", exc)
+        shutdown_event.wait()
+        return
+
+    # ── Instantiate components ────────────────────────────────────────
+    keyboard = KeyboardTracker(window_sec=30.0)
+    mouse = MouseTracker(window_sec=30.0)
+    app = AppUsageMonitor(window_sec=30.0)
+    idle = IdleDetector(
+        threshold_sec=120,
+        check_interval=5.0,
+        window_sec=60.0,
+        on_idle=lambda dur: logger.warning("Employee idle for %.0fs", dur),
+    )
+    offline_queue = OfflineQueue()
+    anomaly_engine = AnomalyEngine()
+    anomaly_engine.load_model()
+
+    # Wire keyboard and mouse activity → idle detector
+    _orig_kb_on_press = keyboard._listener  # patched after start
+
+    extractor = FeatureExtractor(
+        keyboard=keyboard,
+        mouse=mouse,
+        app=app,
+        idle=idle,
+        user_id=user_id,
+        session_id=session_id,
+        session_start=session_start,
+        location_mode=location_mode,
+        wifi_ssid_match=wifi_ssid_match,
+        face_liveness_score=face_liveness_score,
+    )
+
+    # Try to load break manager
+    break_mgr = None
+    try:
+        break_mgr = BreakManager(
+            trackers=(keyboard, mouse, app),
+        )
+        break_mgr.load_breaks()
+    except Exception as exc:
+        logger.warning("BreakManager init error (non-fatal): %s", exc)
+
+    # Screenshot trigger
+    screenshot_trigger = None
+    try:
+        screenshot_trigger = ScreenshotTrigger(db_client=db_client)
+    except Exception as exc:
+        logger.warning("ScreenshotTrigger init error (non-fatal): %s", exc)
+
+    activity_logger = ActivityLogger(
+        feature_extractor=extractor,
+        anomaly_engine=anomaly_engine,
+        db_client=db_client,
+        offline_queue=offline_queue,
+        user_id=user_id,
+        session_id=session_id,
+        alert_sender=alert_sender,
+        break_manager=break_mgr,
+        screenshot_trigger=screenshot_trigger,
+    )
+
+    # ── Start all components ──────────────────────────────────────────
+    keyboard.start()
+    mouse.start()
+    app.start(shutdown_event=shutdown_event)
+    idle.start(shutdown_event=shutdown_event)
+
+    # Hook idle detector to keyboard and mouse presses
+    # (pynput callbacks are already set; we add idle recording via monkey-patch)
+    def _wrap_kb_activity():
+        original_start = keyboard.start
+
+        def patched_on_press_hook():
+            idle.record_activity()
+
+        # Keyboard and mouse both record to idle via polling their data
+        pass  # Already handled: idle_detector reads from timestamps
+
+    activity_logger.start(shutdown_event=shutdown_event)
+
+    # Run break manager if available
+    if break_mgr is not None:
+        try:
+            _bm_thread = threading.Thread(
+                target=break_mgr._run_loop,
+                args=(shutdown_event,),
+                daemon=True,
+                name="BreakManager-Loop",
+            )
+            _bm_thread.start()
+        except Exception as exc:
+            logger.warning("BreakManager loop start error: %s", exc)
+
+    # ── Flush offline queue on reconnect ──────────────────────────────
+    def _flush_loop():
+        while not shutdown_event.is_set():
+            if offline_queue.size > 0 and offline_queue.is_online() and db_client and db_client.is_connected:
+                col = db_client.get_collection("activity_logs")
+                if col:
+                    offline_queue.flush(col)
+            shutdown_event.wait(timeout=60.0)
+
+    threading.Thread(target=_flush_loop, daemon=True, name="OfflineQueueFlusher").start()
+
+    logger.info("C3: all sub-components running for user %s (session=%s)", user_id, session_id)
 
     # Block until shutdown is signalled
     shutdown_event.wait()
+
+    # ── Graceful teardown ─────────────────────────────────────────────
+    keyboard.stop()
+    mouse.stop()
+    app.stop()
+    idle.stop()
+    if break_mgr is not None:
+        try:
+            break_mgr.pause_monitoring()
+        except Exception:
+            pass
+
+    # Final offline flush
+    if db_client and db_client.is_connected and offline_queue.size > 0:
+        col = db_client.get_collection("activity_logs")
+        if col:
+            offline_queue.flush(col)
+
     logger.info("C3 activity monitoring stopped for user: %s", user_id)

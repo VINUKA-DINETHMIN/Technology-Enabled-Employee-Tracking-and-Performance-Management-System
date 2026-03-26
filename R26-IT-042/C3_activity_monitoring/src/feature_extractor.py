@@ -2,114 +2,186 @@
 R26-IT-042 — C3: Activity Monitoring
 C3_activity_monitoring/src/feature_extractor.py
 
-Aggregates raw event streams (keyboard, mouse, app, idle) into
-feature vectors suitable for the anomaly detection model.
+FeatureExtractor — Aggregates outputs from KeyboardTracker, MouseTracker,
+AppUsageMonitor, and IdleDetector every 60 seconds into one complete
+27-field feature vector dict for anomaly scoring and MongoDB storage.
 
-Features extracted per window
-──────────────────────────────
-  keystrokes_per_min, wpm, mouse_velocity, click_rate, scroll_rate,
-  idle_ratio, top_app, app_switches, window_start, window_end
+Feature schema (27 fields)
+──────────────────────────
+  timestamp, user_id, session_id, location_mode, in_break, break_type,
+  mean_dwell_time, std_dwell_time, mean_flight_time, typing_speed_wpm,
+  error_rate, mean_velocity, std_velocity, mean_acceleration,
+  mean_curvature, click_frequency, idle_ratio, app_switch_frequency,
+  active_app_entropy, total_focus_duration, session_duration_min,
+  hour_of_day, day_of_week, geolocation_deviation, wifi_ssid_match,
+  device_fingerprint_match, face_liveness_score
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import platform
+import socket
 import time
-from dataclasses import dataclass, field
-from typing import Optional
-
-import numpy as np
+import uuid
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from C3_activity_monitoring.src.keyboard_tracker import KeyboardTracker
+    from C3_activity_monitoring.src.mouse_tracker import MouseTracker
+    from C3_activity_monitoring.src.app_usage_monitor import AppUsageMonitor
+    from C3_activity_monitoring.src.idle_detector import IdleDetector
 
-@dataclass
-class FeatureVector:
-    """A single window of extracted behavioural features."""
-    window_start: float = field(default_factory=time.time)
-    window_end: float = 0.0
-    keystrokes_per_min: float = 0.0
-    wpm: float = 0.0
-    mouse_velocity: float = 0.0
-    click_rate: float = 0.0
-    scroll_rate: float = 0.0
-    idle_ratio: float = 0.0
-    app_switches: int = 0
-    top_app: str = "Unknown"
 
-    def to_array(self) -> np.ndarray:
-        """Return numeric features as a 1-D numpy array (for ML model)."""
-        return np.array([
-            self.keystrokes_per_min,
-            self.wpm,
-            self.mouse_velocity,
-            self.click_rate,
-            self.scroll_rate,
-            self.idle_ratio,
-            self.app_switches,
-        ], dtype=np.float32)
+def _device_fingerprint() -> str:
+    """Return a stable, non-PII device fingerprint hash."""
+    parts = [
+        platform.node(),
+        platform.machine(),
+        platform.processor(),
+        str(uuid.getnode()),  # MAC address integer
+    ]
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class FeatureExtractor:
     """
-    Collects raw event counters and produces FeatureVector snapshots
-    at the end of each sampling window.
+    Aggregates outputs from all 4 trackers into one feature vector per call.
+
+    Usage
+    ─────
+    >>> extractor = FeatureExtractor(
+    ...     keyboard=kb_tracker,
+    ...     mouse=mouse_tracker,
+    ...     app=app_monitor,
+    ...     idle=idle_detector,
+    ...     user_id="EMP001",
+    ...     session_id="sess-xyz",
+    ... )
+    >>> feature_vector = extractor.extract()
     """
 
-    def __init__(self, window_sec: float = 60.0) -> None:
-        self._window = window_sec
-        self._reset()
+    def __init__(
+        self,
+        keyboard: "KeyboardTracker",
+        mouse: "MouseTracker",
+        app: "AppUsageMonitor",
+        idle: "IdleDetector",
+        user_id: str,
+        session_id: str,
+        session_start: Optional[float] = None,
+        location_mode: str = "unknown",
+        wifi_ssid_match: bool = False,
+        face_liveness_score: float = 0.0,
+    ) -> None:
+        self._keyboard = keyboard
+        self._mouse = mouse
+        self._app = app
+        self._idle = idle
+        self._user_id = user_id
+        self._session_id = session_id
+        self._session_start = session_start or time.perf_counter()
+        self._location_mode = location_mode
+        self._wifi_ssid_match = wifi_ssid_match
+        self._face_liveness_score = face_liveness_score
+        self._device_fp = _device_fingerprint()
+        self._known_fp: Optional[str] = None  # loaded from MongoDB on first call
 
-    def _reset(self) -> None:
-        self._start = time.time()
-        self._keystrokes = 0
-        self._clicks = 0
-        self._scrolls = 0
-        self._idle_sec = 0.0
-        self._app_switches = 0
-        self._last_app = ""
-        self._velocity_samples: list[float] = []
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    def record_keystroke(self) -> None:
-        self._keystrokes += 1
-
-    def record_click(self) -> None:
-        self._clicks += 1
-
-    def record_scroll(self) -> None:
-        self._scrolls += 1
-
-    def record_idle(self, seconds: float) -> None:
-        self._idle_sec += seconds
-
-    def record_app_change(self, new_app: str) -> None:
-        if new_app != self._last_app:
-            self._app_switches += 1
-            self._last_app = new_app
-
-    def record_velocity(self, velocity: float) -> None:
-        self._velocity_samples.append(velocity)
-
-    def extract(self) -> FeatureVector:
+    def extract(
+        self,
+        in_break: bool = False,
+        break_type: Optional[str] = None,
+        geolocation_deviation: float = 0.0,
+    ) -> dict:
         """
-        Compute and return the feature vector for the current window,
-        then reset accumulators.
-        """
-        now = time.time()
-        elapsed_min = max((now - self._start) / 60.0, 1e-6)
-        elapsed_sec = max(now - self._start, 1e-6)
+        Produce one complete 27-field feature vector.
 
-        fv = FeatureVector(
-            window_start=self._start,
-            window_end=now,
-            keystrokes_per_min=self._keystrokes / elapsed_min,
-            wpm=self._keystrokes / 5.0 / elapsed_min,
-            mouse_velocity=float(np.mean(self._velocity_samples)) if self._velocity_samples else 0.0,
-            click_rate=self._clicks / elapsed_min,
-            scroll_rate=self._scrolls / elapsed_min,
-            idle_ratio=self._idle_sec / elapsed_sec,
-            app_switches=self._app_switches,
-            top_app=self._last_app,
+        Parameters
+        ----------
+        in_break:
+            Whether the employee is currently in a break period.
+        break_type:
+            "lunch" | "short" | None
+        geolocation_deviation:
+            Distance from known location in km (0.0 if not computed).
+
+        Returns
+        -------
+        dict
+            All 27 feature fields plus timestamp metadata.
+        """
+        now_utc = datetime.now(timezone.utc)
+        now_perf = time.perf_counter()
+
+        kb_feat = self._keyboard.get_features()
+        ms_feat = self._mouse.get_features()
+        app_feat = self._app.get_features()
+
+        session_elapsed_min = (now_perf - self._session_start) / 60.0
+        idle_ratio = self._idle.get_idle_ratio()
+
+        # Device fingerprint match (True if same as registered device)
+        device_fp_match = (
+            self._known_fp is None or self._device_fp == self._known_fp
         )
-        self._reset()
-        return fv
+
+        feature_vector = {
+            # ── Metadata ───────────────────────────────────────────
+            "timestamp": now_utc.isoformat(),
+            "user_id": self._user_id,
+            "session_id": self._session_id,
+            "location_mode": self._location_mode,
+            "in_break": in_break,
+            "break_type": break_type,
+            # ── Keyboard features ──────────────────────────────────
+            "mean_dwell_time": kb_feat["mean_dwell_time"],
+            "std_dwell_time": kb_feat["std_dwell_time"],
+            "mean_flight_time": kb_feat["mean_flight_time"],
+            "typing_speed_wpm": kb_feat["typing_speed_wpm"],
+            "error_rate": kb_feat["error_rate"],
+            # ── Mouse features ─────────────────────────────────────
+            "mean_velocity": ms_feat["mean_velocity"],
+            "std_velocity": ms_feat["std_velocity"],
+            "mean_acceleration": ms_feat["mean_acceleration"],
+            "mean_curvature": ms_feat["mean_curvature"],
+            "click_frequency": ms_feat["click_frequency"],
+            "idle_ratio": idle_ratio,
+            # ── App features ───────────────────────────────────────
+            "app_switch_frequency": app_feat["app_switch_frequency"],
+            "active_app_entropy": app_feat["active_app_entropy"],
+            "total_focus_duration": app_feat["total_focus_duration"],
+            # ── Session / temporal context ─────────────────────────
+            "session_duration_min": round(session_elapsed_min, 2),
+            "hour_of_day": now_utc.hour,
+            "day_of_week": now_utc.weekday(),  # 0=Monday … 6=Sunday
+            # ── Environmental context ──────────────────────────────
+            "geolocation_deviation": geolocation_deviation,
+            "wifi_ssid_match": self._wifi_ssid_match,
+            "device_fingerprint_match": device_fp_match,
+            "face_liveness_score": self._face_liveness_score,
+        }
+
+        return feature_vector
+
+    def update_liveness_score(self, score: float) -> None:
+        """Update the face liveness score (called after periodic re-check)."""
+        self._face_liveness_score = score
+
+    def update_location(self, mode: str, wifi_match: bool) -> None:
+        """Update location context (office/home/unknown)."""
+        self._location_mode = mode
+        self._wifi_ssid_match = wifi_match
+
+    def set_known_device_fp(self, fp: str) -> None:
+        """Set the registered device fingerprint for matching."""
+        self._known_fp = fp
