@@ -44,6 +44,13 @@ KNOWN_COLLECTIONS: set[str] = {
     "behavioral_baselines",
     "auth_events",
     "productivity_scores",
+    # New collections added by full system build
+    "employees",
+    "tasks",
+    "task_logs",
+    "activity_logs",
+    "attendance_logs",
+    "policy_violations",
 }
 
 
