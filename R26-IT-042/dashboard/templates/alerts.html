@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }} — Alerts</title>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+    h1 { color: #ef4444; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #2d3748; }
+    .HIGH, .CRITICAL { color: #ef4444; }
+    .MEDIUM { color: #f59e0b; }
+    .LOW { color: #22c55e; }
+  </style>
+</head>
+<body>
+  <h1>⚠ Risk Alerts</h1>
+  <table id="alerts-table">
+    <thead><tr><th>Time</th><th>User</th><th>Score</th><th>Level</th><th>Factors</th></tr></thead>
+    <tbody id="alerts-body"><tr><td colspan="5">Loading…</td></tr></tbody>
+  </table>
+  <script>
+    fetch("/api/alerts")
+      .then(r => r.json())
+      .then(data => {
+        const tbody = document.getElementById("alerts-body");
+        tbody.innerHTML = data.map(a => `
+          <tr>
+            <td>${a.timestamp}</td>
+            <td>${a.user_id}</td>
+            <td>${a.risk_score}</td>
+            <td class="${a.level}">${a.level}</td>
+            <td>${(a.factors || []).join(", ")}</td>
+          </tr>`).join("") || "<tr><td colspan='5'>No alerts.</td></tr>";
+      });
+  </script>
+</body>
+</html>
