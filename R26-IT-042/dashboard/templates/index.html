@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }} — Dashboard</title>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+    h1 { color: #3b82f6; }
+    .card { background: #1a1d27; border-radius: 12px; padding: 20px; margin: 16px 0; }
+  </style>
+</head>
+<body>
+  <h1>{{ app_name }}</h1>
+  <div class="card">
+    <h2>Active Sessions</h2>
+    <p>Loading session data…</p>
+  </div>
+  <script>
+    fetch("/api/sessions")
+      .then(r => r.json())
+      .then(data => {
+        document.querySelector(".card p").textContent =
+          data.length ? `${data.length} active session(s).` : "No active sessions.";
+      });
+  </script>
+</body>
+</html>

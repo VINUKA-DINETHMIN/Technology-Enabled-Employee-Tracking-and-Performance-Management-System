@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }} — Productivity</title>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+    h1 { color: #22c55e; }
+    .card { background: #1a1d27; border-radius: 12px; padding: 20px; margin: 16px 0; }
+    .score { font-size: 3rem; font-weight: bold; color: #3b82f6; }
+  </style>
+</head>
+<body>
+  <h1>📊 Productivity Scores</h1>
+  <div class="card">
+    <p>Latest predicted productivity score:</p>
+    <div class="score" id="score">—</div>
+    <p id="score-meta"></p>
+  </div>
+  <!-- TODO: Add time-series chart using Chart.js -->
+</body>
+</html>

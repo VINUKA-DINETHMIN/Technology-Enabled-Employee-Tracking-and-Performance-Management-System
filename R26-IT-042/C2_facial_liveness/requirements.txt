@@ -1,0 +1,6 @@
+# C2 component requirements (subset of master requirements.txt)
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+Pillow>=10.0.0
+pymongo>=4.6.0
+python-dotenv>=1.0.0

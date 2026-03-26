@@ -1,0 +1,50 @@
+# ============================================================
+# R26-IT-042 — .gitignore
+# ============================================================
+
+# Environment secrets
+.env
+
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Trained model binaries
+*.pkl
+*.h5
+*.pt
+*.pth
+
+# PyInstaller build output
+dist/
+build/
+*.spec
+
+# macOS system files
+.DS_Store
+
+# Encrypted log files
+*.log
+*.enc
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Temp data
+data/*.csv
