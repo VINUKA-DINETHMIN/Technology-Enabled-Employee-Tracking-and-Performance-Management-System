@@ -100,12 +100,14 @@ class AlertDocument(BaseDocument):
 @dataclass
 class ScreenshotDocument(BaseDocument):
     """
-    Metadata for a triggered screenshot (actual image stored encrypted on disk).
+    Metadata for a triggered screenshot.
+    Image can be stored locally (file_path) and/or in DB (image_base64).
 
     Collection: screenshots
     ───────────────────────
     """
     file_path: str = ""                 # Encrypted local path
+    image_base64: Optional[str] = None  # Base64 encoded image data for remote viewing
     trigger_reason: str = "scheduled"  # "scheduled" | "anomaly" | "manual"
     risk_score_at_capture: float = 0.0
     encrypted: bool = True

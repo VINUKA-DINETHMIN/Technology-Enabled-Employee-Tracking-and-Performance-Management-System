@@ -122,7 +122,9 @@ def start_monitoring(
     # Screenshot trigger
     screenshot_trigger = None
     try:
-        screenshot_trigger = ScreenshotTrigger(db_client=db_client)
+        from common.encryption import AESEncryptor
+        encryptor = AESEncryptor()
+        screenshot_trigger = ScreenshotTrigger(db_client=db_client, encryptor=encryptor)
     except Exception as exc:
         logger.warning("ScreenshotTrigger init error (non-fatal): %s", exc)
 
@@ -139,22 +141,16 @@ def start_monitoring(
     )
 
     # ── Start all components ──────────────────────────────────────────
+    # Wire activity hooks before starting
+    keyboard._on_activity = idle.record_activity
+    mouse._on_activity    = idle.record_activity
+
     keyboard.start()
     mouse.start()
     app.start(shutdown_event=shutdown_event)
     idle.start(shutdown_event=shutdown_event)
 
-    # Hook idle detector to keyboard and mouse presses
-    # (pynput callbacks are already set; we add idle recording via monkey-patch)
-    def _wrap_kb_activity():
-        original_start = keyboard.start
-
-        def patched_on_press_hook():
-            idle.record_activity()
-
-        # Keyboard and mouse both record to idle via polling their data
-        pass  # Already handled: idle_detector reads from timestamps
-
+    # Keyboard and mouse both record to idle via polling their data
     activity_logger.start(shutdown_event=shutdown_event)
 
     # Run break manager if available
@@ -175,7 +171,7 @@ def start_monitoring(
         while not shutdown_event.is_set():
             if offline_queue.size > 0 and offline_queue.is_online() and db_client and db_client.is_connected:
                 col = db_client.get_collection("activity_logs")
-                if col:
+                if col is not None:
                     offline_queue.flush(col)
             shutdown_event.wait(timeout=60.0)
 
@@ -200,7 +196,7 @@ def start_monitoring(
     # Final offline flush
     if db_client and db_client.is_connected and offline_queue.size > 0:
         col = db_client.get_collection("activity_logs")
-        if col:
+        if col is not None:
             offline_queue.flush(col)
 
     logger.info("C3 activity monitoring stopped for user: %s", user_id)

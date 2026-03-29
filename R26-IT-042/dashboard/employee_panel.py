@@ -42,6 +42,7 @@ C_GREEN = "#22c55e"
 C_BLUE  = "#3b82f6"
 C_TEXT  = "#e2e8f0"
 C_MUTED = "#64748b"
+C_SIDEBAR = "#1a1d27"
 
 POLL_TASKS_MS = 30_000      # 30 seconds
 TOAST_DURATION_MS = 4_000   # 4 seconds
@@ -60,7 +61,7 @@ def _priority_color(priority: str) -> str:
 
 
 def _status_color(status: str) -> str:
-    return {"pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN}.get(status, C_MUTED)
+    return {"pending": C_MUTED, "in_progress": C_AMBER, "paused": C_RED, "completed": C_GREEN}.get(status, C_MUTED)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -142,11 +143,14 @@ class BreakConfigPopup(ctk.CTkToplevel):
             ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=12, weight="bold"),
                          text_color=C_TEXT, width=120, anchor="w").pack(side="left")
             t_var = ctk.StringVar(value=cfg.get("start", "09:00"))
-            d_var = ctk.StringVar(value=str(cfg.get("duration_minutes", 15)))
-            ctk.CTkEntry(row, textvariable=t_var, width=76, placeholder_text="HH:MM").pack(side="left", padx=4)
-            ctk.CTkLabel(row, text="min:", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=4)
-            ctk.CTkEntry(row, textvariable=d_var, width=52).pack(side="left")
-            self._entries[key] = {"time_var": t_var, "dur_var": d_var}
+            
+            # Use fixed durations: 60 for lunch, 15 for others
+            fixed_dur = 60 if key == "lunch" else 15
+            
+            ctk.CTkEntry(row, textvariable=t_var, width=80, placeholder_text="HH:MM").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"({fixed_dur} min)", text_color=C_TEAL, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=4)
+            
+            self._entries[key] = {"time_var": t_var, "duration": fixed_dur}
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=12)
@@ -168,7 +172,7 @@ class BreakConfigPopup(ctk.CTkToplevel):
         cfg = {}
         for key, ev in self._entries.items():
             cfg[key] = {"start": ev["time_var"].get().strip(),
-                        "duration_minutes": int(ev["dur_var"].get().strip() or 15)}
+                        "duration_minutes": ev["duration"]}
         try:
             from C3_activity_monitoring.src.break_manager import BreakManager
             bm = BreakManager(user_id=self._user_id)
@@ -236,6 +240,8 @@ class TaskCard(ctk.CTkFrame):
                           height=32, font=ctk.CTkFont(size=12), command=self._start_task).pack(side="left")
 
         elif status == "in_progress":
+            ctk.CTkButton(btn_row, text="Pause", width=80, fg_color=C_AMBER, hover_color="#d97706",
+                          height=32, font=ctk.CTkFont(size=12), command=self._pause_task).pack(side="left", padx=(0, 8))
             ctk.CTkButton(btn_row, text="Complete", width=110, fg_color=C_GREEN, hover_color="#15803d",
                           height=32, font=ctk.CTkFont(size=12), command=self._complete_task).pack(side="left")
             # Restart timer if started_at exists
@@ -247,12 +253,17 @@ class TaskCard(ctk.CTkFrame):
                     self._tick_timer()
                 except Exception:
                     pass
+        elif status == "paused":
+            ctk.CTkButton(btn_row, text="Resume", width=110, fg_color=C_TEAL, hover_color=C_TEAL_D,
+                          height=32, font=ctk.CTkFont(size=12), command=self._start_task).pack(side="left")
+            if self._timer_label:
+                self._timer_label.configure(text="Task Paused", text_color=C_AMBER)
 
     def _start_task(self) -> None:
         now = datetime.utcnow().isoformat()
         try:
             col = self._db.get_collection("tasks")
-            if col:
+            if col is not None:
                 col.update_one(
                     {"task_id": self._task["task_id"]},
                     {"$set": {"status": "in_progress", "started_at": now}},
@@ -266,6 +277,26 @@ class TaskCard(ctk.CTkFrame):
 
             # Log to C4 hook
             self._log_task_start(now)
+            
+            # Re-render buttons (lazy refresh)
+            self._refresh_parent_tab()
+        except Exception as exc:
+            import tkinter.messagebox as mb
+            mb.showerror("Error", str(exc))
+
+    def _pause_task(self) -> None:
+        self._timer_running = False
+        now = datetime.utcnow().isoformat()
+        try:
+            col = self._db.get_collection("tasks")
+            if col is not None:
+                col.update_one(
+                    {"task_id": self._task["task_id"]},
+                    {"$set": {"status": "paused", "paused_at": now}},
+                )
+            self._task["status"] = "paused"
+            self._status_lbl.configure(text="Paused", text_color=C_RED)
+            self._refresh_parent_tab()
         except Exception as exc:
             import tkinter.messagebox as mb
             mb.showerror("Error", str(exc))
@@ -275,7 +306,7 @@ class TaskCard(ctk.CTkFrame):
         self._timer_running = False
         try:
             col = self._db.get_collection("tasks")
-            if col:
+            if col is not None:
                 col.update_one(
                     {"task_id": self._task["task_id"]},
                     {"$set": {"status": "completed", "completed_at": now}},
@@ -299,7 +330,7 @@ class TaskCard(ctk.CTkFrame):
         """Feed task start to C4 productivity prediction."""
         try:
             col = self._db.get_collection("task_logs")
-            if col:
+            if col is not None:
                 col.insert_one({
                     "task_id": self._task.get("task_id"),
                     "employee_id": self._user_id,
@@ -307,6 +338,17 @@ class TaskCard(ctk.CTkFrame):
                     "estimated_duration": None,
                     "title": self._task.get("title", ""),
                 })
+        except Exception:
+            pass
+
+    def _refresh_parent_tab(self) -> None:
+        # Simple hack to find the scrollable frame and refresh
+        # In a real app we'd use events, but here we just call refresh
+        try:
+            # TaskCard -> ctk_scrollable_frame_canvas -> ctk_scrollable_frame -> tasks_tab -> content -> EmployeePanel
+            panel = self.master.master.master.master.master
+            if hasattr(panel, "_refresh_tasks"):
+                panel._refresh_tasks()
         except Exception:
             pass
 
@@ -436,7 +478,7 @@ class EmployeePanel(ctk.CTkToplevel):
             return
         try:
             col = self._db.get_collection("tasks")
-            if not col:
+            if col is None:
                 return
             tasks = list(col.find({"employee_id": self._user_id}, {"_id": 0}).sort("assigned_at", -1).limit(20))
             if not tasks:
@@ -511,7 +553,7 @@ class EmployeePanel(ctk.CTkToplevel):
         # Productivity from last activity log
         try:
             col = self._db.get_collection("activity_logs")
-            if col:
+            if col is not None:
                 doc = col.find_one({"user_id": self._user_id}, sort=[("timestamp", -1)])
                 if doc:
                     prod = doc.get("productivity_score", 0.0)
@@ -560,7 +602,7 @@ class EmployeePanel(ctk.CTkToplevel):
             return
         try:
             col = self._db.get_collection("attendance_logs")
-            if col:
+            if col is not None:
                 docs = list(col.find({"employee_id": self._user_id}, {"_id": 0}).sort("date", -1).limit(30))
                 for d in docs:
                     s_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED}.get(d.get("status", ""), C_MUTED)

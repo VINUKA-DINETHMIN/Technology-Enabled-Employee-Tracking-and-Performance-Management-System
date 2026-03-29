@@ -83,6 +83,7 @@ class Application:
         self._monitor_threads: list[threading.Thread] = []
         self._shutdown_event = threading.Event()
         self._root: Optional[ctk.CTk] = None
+        self._liveness_score = 1.0
 
     # ------------------------------------------------------------------
     # Startup
@@ -197,7 +198,8 @@ class Application:
         self._employee = employee
         self._user_id = employee.get("employee_id", "?")
         self._session_id = session_id
-        log.info("Login success: %s session=%s", self._user_id, session_id)
+        self._liveness_score = employee.get("face_liveness_score", 1.0)
+        log.info("Login success: %s session=%s liveness=%.2f", self._user_id, session_id, self._liveness_score)
 
         if self._secure_logger:
             self._secure_logger._user_id = self._user_id
@@ -241,7 +243,7 @@ class Application:
         try:
             from datetime import datetime, timezone
             col = self._db_client.get_collection("attendance_logs")
-            if col:
+            if col is not None:
                 today = datetime.now().strftime("%Y-%m-%d")
                 existing = col.find_one({"employee_id": self._user_id, "date": today})
                 if not existing:
@@ -286,7 +288,7 @@ class Application:
                 session_id=self._session_id,
                 location_mode="unknown",
                 wifi_ssid_match=False,
-                face_liveness_score=1.0,
+                face_liveness_score=self._liveness_score,
             )
         except ImportError:
             log.warning("C3 not available — skipping activity monitoring.")
@@ -355,7 +357,7 @@ class Application:
             if self._session_id and self._db_client and self._db_client.is_connected:
                 from datetime import datetime
                 col = self._db_client.get_collection("sessions")
-                if col:
+                if col is not None:
                     col.update_one(
                         {"session_id": self._session_id},
                         {"$set": {"status": "ended", "logout_at": datetime.utcnow().isoformat()}},
@@ -371,7 +373,7 @@ class Application:
         try:
             if self._secure_logger and self._db_client and self._db_client.is_connected:
                 col = self._db_client.get_collection("sessions")
-                if col:
+                if col is not None:
                     self._secure_logger.flush_queue(col)
         except Exception:
             pass

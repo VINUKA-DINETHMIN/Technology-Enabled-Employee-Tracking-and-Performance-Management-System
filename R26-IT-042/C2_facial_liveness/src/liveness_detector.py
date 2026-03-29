@@ -83,8 +83,13 @@ class LivenessDetector:
         self._initialized = False
 
     def initialize(self) -> bool:
-        """Load MediaPipe Face Mesh. Returns True on success."""
+        """Load MediaPipe Face Mesh. Returns True on success, else sets up fallback."""
         try:
+            # Suppress TensorFlow stderr clutter on systems without AVX
+            import os
+            import sys
+            os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+            
             import mediapipe as mp
             self._face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
@@ -94,33 +99,45 @@ class LivenessDetector:
                 min_tracking_confidence=0.5,
             )
             self._initialized = True
+            self._fallback_mode = False
             logger.info("LivenessDetector initialized (MediaPipe FaceMesh).")
             return True
-        except ImportError:
-            logger.warning("mediapipe not installed — liveness detection disabled.")
-            return False
-        except Exception as exc:
-            logger.error("LivenessDetector init error: %s", exc)
-            return False
+        except (ImportError, Exception) as exc:
+            # CPU likely lacks AVX or MediaPipe is missing
+            self._initialized = True # Mark as initialized for fallback processing
+            self._face_mesh = None
+            self._fallback_mode = True
+            # Fallback state
+            self._prev_gray = None
+            self._movement_energy = 0.0
+            logger.warning(f"MediaPipe error: {exc}. Liveness detector running in FE-Fallback (Movement) mode.")
+            return True
 
     def process_frame(self, frame_rgb: np.ndarray) -> bool:
-        """
-        Process one RGB video frame.
-
-        Parameters
-        ----------
-        frame_rgb:
-            numpy array of shape (H, W, 3) in RGB format.
-
-        Returns
-        -------
-        bool
-            True if a face was detected in this frame.
-        """
-        if not self._initialized or self._face_mesh is None:
+        if not self._initialized:
             return False
 
         self._frame_count += 1
+        import cv2
+
+        # ── Fallback Movement Detection ──────────────────────────────
+        if self._fallback_mode:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+            # Apply Gaussian blur to reduce noise
+            gray = cv2.GaussianBlur(gray, (7, 7), 0)
+            
+            if self._prev_gray is not None:
+                div = cv2.absdiff(self._prev_gray, gray)
+                # Calculate movement intensity (average change per pixel)
+                # High threshold to ignore sensor noise, low enough to catch breathing/eye movements
+                _, thresh = cv2.threshold(div, 25, 255, cv2.THRESH_BINARY)
+                energy = np.sum(thresh) / (frame_rgb.shape[0] * frame_rgb.shape[1])
+                self._movement_energy += energy
+            
+            self._prev_gray = gray
+            return True
+
+        # ── Standard MediaPipe/TensorFlow Detection ─────────────────
         try:
             import mediapipe as mp
             results = self._face_mesh.process(frame_rgb)
@@ -129,7 +146,7 @@ class LivenessDetector:
 
             lm = results.multi_face_landmarks[0].landmark
 
-            # ── Blink detection ────────────────────────────────────────
+            # Blink detection
             left_ear  = _eye_aspect_ratio(lm, _LEFT_EYE)
             right_ear = _eye_aspect_ratio(lm, _RIGHT_EYE)
             avg_ear   = (left_ear + right_ear) / 2.0
@@ -140,26 +157,30 @@ class LivenessDetector:
                 self._blink_count += 1
                 self._below_threshold = False
 
-            # ── Head movement ─────────────────────────────────────────
+            # Head movement
             nose = lm[_NOSE_TIP]
             self._head_positions.append((nose.x, nose.y))
             if len(self._head_positions) > _ANALYSIS_FRAMES:
                 self._head_positions.pop(0)
 
             return True
-        except Exception as exc:
-            logger.debug("Frame processing error: %s", exc)
+        except Exception:
             return False
 
     def get_result(self) -> "LivenessResult":
-        """
-        Compute final liveness result from collected frames.
+        if self._fallback_mode:
+            # In fallback mode, "pass" if we detected enough movement frames
+            # movement_energy accumulates over time; 3.0 is a conservative threshold
+            passed = self._movement_energy >= 3.0 
+            return LivenessResult(
+                passed=passed,
+                blink_count=0,
+                head_moved=passed,
+                liveness_score=0.7 if passed else 0.0,
+                frame_count=self._frame_count,
+            )
 
-        Returns
-        -------
-        LivenessResult
-        """
-        # Head movement: range of nose positions
+        # Standard calculation
         head_moved = False
         if len(self._head_positions) >= 10:
             xs = [p[0] for p in self._head_positions]
@@ -168,8 +189,6 @@ class LivenessDetector:
             head_moved = head_range >= self._head_move_threshold
 
         blink_ok = self._blink_count >= self._min_blinks
-
-        # Liveness score 0–1
         blink_score = min(self._blink_count / self._min_blinks, 1.0) * 0.6
         head_score  = 0.4 if head_moved else 0.0
         score       = round(blink_score + head_score, 3)

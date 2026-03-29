@@ -56,6 +56,7 @@ class KeyboardTracker:
             is discarded automatically.
         """
         self._window_sec = window_sec
+        self._on_activity = None
         self._running = False
         self._listener = None
         self._lock = threading.Lock()
@@ -88,6 +89,8 @@ class KeyboardTracker:
 
                 with self._lock:
                     self._pending_press[key_id] = (ts, is_backspace)
+                if self._on_activity:
+                    self._on_activity()
 
             def on_release(key):
                 release_ts = time.perf_counter()
