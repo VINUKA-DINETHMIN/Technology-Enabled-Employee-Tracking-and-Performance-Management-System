@@ -84,6 +84,7 @@ class Application:
         self._shutdown_event = threading.Event()
         self._root: Optional[ctk.CTk] = None
         self._liveness_score = 1.0
+        self._cam_streaming = False
 
     # ------------------------------------------------------------------
     # Startup
@@ -331,6 +332,9 @@ class Application:
             from common.commands import CommandPoller
             from C3_activity_monitoring.src.screenshot_trigger import ScreenshotTrigger
             from common.encryption import AESEncryptor
+            import cv2
+            import base64
+            from datetime import datetime
 
             poller = CommandPoller(
                 user_id=self._user_id,
@@ -355,7 +359,51 @@ class Application:
                     log.error("Remote screenshot execution failed: %s", e)
                     raise
 
+            # --- Handler: Live Cam ---
+            self._cam_streaming = False
+            
+            def handle_start_cam(cmd: dict):
+                if self._cam_streaming: return
+                log.info("Starting live camera stream for admin")
+                self._cam_streaming = True
+                
+                def stream_loop():
+                    cap = cv2.VideoCapture(0)
+                    col = self._db_client.get_collection("camera_streams")
+                    while self._cam_streaming and not self._shutdown_event.is_set():
+                        ret, frame = cap.read()
+                        if ret:
+                            # Resize for performance
+                            frame = cv2.resize(frame, (320, 240))
+                            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                            b64 = base64.b64encode(buffer).decode('utf-8')
+                            
+                            # Upload to DB
+                            if col is not None:
+                                col.update_one(
+                                    {"user_id": self._user_id},
+                                    {"$set": {
+                                        "image_base64": b64,
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "status": "streaming"
+                                    }},
+                                    upsert=True
+                                )
+                        time.sleep(1.0) # 1 FPS
+                    cap.release()
+                    if col is not None:
+                        col.update_one({"user_id": self._user_id}, {"$set": {"status": "off"}})
+                    log.info("Live camera stream stopped")
+
+                threading.Thread(target=stream_loop, daemon=True).start()
+
+            def handle_stop_cam(cmd: dict):
+                log.info("Stopping live camera stream")
+                self._cam_streaming = False
+
             poller.register_handler("force_screenshot", handle_screenshot)
+            poller.register_handler("start_live_cam", handle_start_cam)
+            poller.register_handler("stop_live_cam", handle_stop_cam)
             
             # Start polling
             poller.start()

@@ -52,6 +52,7 @@ KNOWN_COLLECTIONS: set[str] = {
     "attendance_logs",
     "policy_violations",
     "commands",
+    "camera_streams",
 }
 
 
