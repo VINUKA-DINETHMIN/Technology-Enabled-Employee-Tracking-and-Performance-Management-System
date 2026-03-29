@@ -1294,14 +1294,29 @@ class AdminPanel(ctk.CTk):
                 query["employee_id"] = emp_filter
 
             docs = list(col.find(query, {"_id": 0}).limit(50))
+            active_sessions = set()
+            try:
+                scol = self._db.get_collection("sessions")
+                if scol:
+                    active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
+            except Exception: pass
+
             for d in docs:
-                status_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(d.get("status", ""), C_MUTED)
+                eid = d.get("employee_id")
+                status = d.get("status", "—")
+                if eid in active_sessions:
+                    status = "Online"
+                elif status in ["On Time", "Late", "Overtime"]:
+                    status = "Offline"
+                
+                s_color = {"Online": C_GREEN, "On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(status, C_MUTED)
                 row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
                 row.pack(fill="x", pady=2)
                 row.pack_propagate(False)
-                for val in [d.get("full_name","?"), d.get("employee_id","?"), d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]:
+                row_vals = [d.get("full_name","?"), eid, d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]
+                for val in row_vals:
                     ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=12, expand=True)
-                ctk.CTkLabel(row, text=d.get("status","—"), text_color=status_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+                ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
         except Exception as exc:
             ctk.CTkLabel(self._att_list_frame, text=str(exc), text_color=C_RED).pack()
 

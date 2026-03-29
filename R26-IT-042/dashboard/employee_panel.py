@@ -639,14 +639,33 @@ class EmployeePanel(ctk.CTkToplevel):
             col = self._db.get_collection("attendance_logs")
             if col is not None:
                 docs = list(col.find({"employee_id": self._user_id}, {"_id": 0}).sort("date", -1).limit(30))
+                
+                # Today's date for real-time status override
+                from datetime import datetime
+                today_str = datetime.now().strftime("%Y-%m-%d")
+
                 for d in docs:
-                    s_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED}.get(d.get("status", ""), C_MUTED)
+                    status = d.get("status", "—")
+                    row_date = d.get("date", "")
+                    
+                    # Real-time status override for CURRENT active session
+                    if row_date == today_str:
+                        status = "Online"
+
+                    s_color = {
+                        "Online": C_GREEN,
+                        "On Time": C_GREEN, 
+                        "Late": C_AMBER, 
+                        "Early Departure": C_RED, 
+                        "Offline": C_RED
+                    }.get(status, C_MUTED)
+
                     row = ctk.CTkFrame(self._att_scroll, fg_color=C_CARD, corner_radius=8, height=40)
                     row.pack(fill="x", pady=2)
                     row.pack_propagate(False)
-                    for val in [d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]:
+                    for val in [row_date, d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]:
                         ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=16, expand=True)
-                    ctk.CTkLabel(row, text=d.get("status","—"), text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+                    ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
         except Exception as exc:
             ctk.CTkLabel(self._att_scroll, text=str(exc), text_color=C_RED).pack()
 
