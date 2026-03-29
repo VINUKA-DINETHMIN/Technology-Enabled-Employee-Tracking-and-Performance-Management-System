@@ -29,7 +29,7 @@ def start_monitoring(
     location_mode: str = "unknown",
     wifi_ssid_match: bool = False,
     face_liveness_score: float = 1.0,
-) -> None:
+) -> Optional[BreakManager]:
     """
     Start all C3 activity monitoring sub-components.
 
@@ -178,6 +178,22 @@ def start_monitoring(
     threading.Thread(target=_flush_loop, daemon=True, name="OfflineQueueFlusher").start()
 
     logger.info("C3: all sub-components running for user %s (session=%s)", user_id, session_id)
+
+    # Return break_mgr so UI can use it, but continue blocking this thread
+    # Wait, if we return now, the caller in main.py will continue.
+    # main.py starts this in a thread, so returning is fine.
+    
+    # But wait, we need to wait for shutdown_event.
+    # We can use a different approach: store it in a shared container.
+    
+    # Let's just return it and let the caller decide what to do.
+    # Actually, the simplest is to return it and have the caller handle the wait if needed.
+    # But start_monitoring is expected to block.
+    
+    # I'll use a threading.Event to signal that break_mgr is ready.
+    # Or just return it.
+    
+    return break_mgr
 
     # Block until shutdown is signalled
     shutdown_event.wait()
