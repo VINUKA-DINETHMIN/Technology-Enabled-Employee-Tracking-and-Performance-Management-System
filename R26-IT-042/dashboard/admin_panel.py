@@ -276,6 +276,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                       command=lambda: self._force_screenshot(emp_id)).pack(side="left", expand=True, padx=4)
         ctk.CTkButton(ctrl_frame, text="Live Camera", fg_color=C_RED, hover_color="#b91c1c", height=38, 
                       command=lambda: LiveCamViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
+        ctk.CTkButton(ctrl_frame, text="Live Screen", fg_color="#3b82f6", hover_color="#2563eb", height=38, 
+                      command=lambda: LiveScreenViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
 
     def _force_screenshot(self, emp_id: str) -> None:
         if not self._db or not self._db.is_connected: return
@@ -517,6 +519,92 @@ class LiveCamViewer(ctk.CTkToplevel):
         self._send_command("stop_live_cam")
         self.destroy()
 
+class LiveScreenViewer(ctk.CTkToplevel):
+    """
+    Real-time screen feed viewer that polls MongoDB for latest snapshots.
+    """
+    def __init__(self, parent, user_id: str, db: Optional[MongoDBClient]):
+        super().__init__(parent)
+        self.user_id = user_id
+        self._db = db
+        self.title(f"Live Screen — {user_id}")
+        self.geometry("820x600")
+        self.attributes("-topmost", True)
+        self.configure(fg_color=C_BG)
+
+        self._lbl = ctk.CTkLabel(self, text="Initializing Stream...", font=ctk.CTkFont(size=14), text_color=C_MUTED)
+        self._lbl.pack(expand=True, fill="both", padx=20, pady=20)
+
+        self._status_lbl = ctk.CTkLabel(self, text="Connecting to remote device...", font=ctk.CTkFont(size=11), text_color=C_AMBER)
+        self._status_lbl.pack(pady=(0, 10))
+
+        # Send command to start streaming
+        self._send_command("start_live_screen")
+        
+        self._closed = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._update_loop()
+
+    def _send_command(self, cmd_type: str):
+        if not self._db or not self._db.is_connected: return
+        import uuid
+        try:
+            col = self._db.get_collection("commands")
+            if col is not None:
+                now = datetime.utcnow()
+                expires = (now + timedelta(minutes=5)).isoformat()
+                col.insert_one({
+                    "command_id": str(uuid.uuid4()),
+                    "target_user_id": self.user_id,
+                    "command_type": cmd_type,
+                    "status": "pending",
+                    "timestamp": now.isoformat(),
+                    "expires_at": expires
+                })
+        except Exception: pass
+
+    def _update_loop(self):
+        if self._closed or not self.winfo_exists(): return
+        if not self._db or not self._db.is_connected: 
+            self.after(1000, self._update_loop)
+            return
+        
+        try:
+            import base64, io
+            from PIL import Image
+            
+            col = self._db.get_collection("screen_streams")
+            if col is not None:
+                doc = col.find_one({"user_id": self.user_id})
+                if doc:
+                    status = doc.get("status")
+                    if status == "streaming":
+                        b64 = doc.get("image_base64")
+                        if b64:
+                            img_bytes = base64.b64decode(b64)
+                            img = Image.open(io.BytesIO(img_bytes))
+                            # Display
+                            photo = ctk.CTkImage(light_image=img, dark_image=img, size=(780, 440))
+                            self._lbl.configure(image=photo, text="")
+                            self._lbl._image = photo # Keep reference
+                            self._status_lbl.configure(text=f"Live Screen • Last Update: {doc.get('timestamp','?')[-8:]}", text_color=C_GREEN)
+                    elif status == "off":
+                        err = doc.get("error", "Stream stopped by employee system.")
+                        self._status_lbl.configure(text=err, text_color=C_RED)
+                else:
+                    self._status_lbl.configure(text="Waiting for remote screen capture...", text_color=C_AMBER)
+        except Exception as e:
+            if self.winfo_exists():
+                self._status_lbl.configure(text=f"Update failed: {e}", text_color=C_RED)
+        
+        if self.winfo_exists():
+            self.after(2000, self._update_loop)
+
+    def _on_close(self):
+        self._closed = True
+        self._send_command("stop_live_screen")
+        self.destroy()
+
 class AdminPanel(ctk.CTk):
     """
     Full-featured CustomTkinter Admin Panel for the monitoring system.
@@ -574,6 +662,7 @@ class AdminPanel(ctk.CTk):
         nav_items = [
             ("dashboard",  "  Dashboard"),
             ("employees",  "  Employees"),
+            ("live_grid",  "  Live Monitor"),
             ("alerts",     "  Alerts"),
             ("tasks",      "  Tasks"),
             ("attendance", "  Attendance"),
@@ -625,11 +714,81 @@ class AdminPanel(ctk.CTk):
         self._tabs: dict = {
             "dashboard":  self._build_dashboard_tab(),
             "employees":  self._build_employees_tab(),
+            "live_grid":  self._tab_live_grid(),
             "alerts":     self._build_alerts_tab(),
             "tasks":      self._build_tasks_tab(),
             "attendance": self._build_attendance_tab(),
             "settings":   self._build_settings_tab(),
         }
+
+    def _tab_live_grid(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self._tab_frame, fg_color="transparent")
+        
+        header = ctk.CTkFrame(frame, fg_color=C_CARD, height=60, corner_radius=12)
+        header.pack(fill="x", pady=(0, 20))
+        header.pack_propagate(False)
+        
+        ctk.CTkLabel(header, text="Live Screen Monitor Grid", font=ctk.CTkFont(size=18, weight="bold")).pack(side="left", padx=20)
+        
+        self._grid_scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+        self._grid_scroll.pack(fill="both", expand=True)
+        
+        self._grid_items = {} # {user_id: {frame, label, status_label}}
+        
+        return frame
+
+    def _refresh_live_grid(self):
+        if not self._db or not self._db.is_connected: return
+        
+        col = self._db.get_collection("screen_streams")
+        if col is None: return
+        
+        # Get all streaming sessions
+        streams = list(col.find({"status": "streaming"}))
+        
+        # Current IDs in grid
+        current_ids = set(self._grid_items.keys())
+        streaming_ids = {s["user_id"] for s in streams}
+        
+        # Remove ended streams
+        for uid in current_ids - streaming_ids:
+            self._grid_items[uid]["frame"].destroy()
+            del self._grid_items[uid]
+            
+        # Add/Update streams
+        import base64, io
+        from PIL import Image
+        
+        for i, s in enumerate(streams):
+            uid = s["user_id"]
+            if uid not in self._grid_items:
+                # Add new tile
+                tile = ctk.CTkFrame(self._grid_scroll, fg_color=C_CARD, corner_radius=12, width=380, height=240)
+                tile.grid(row=len(self._grid_items)//3, column=len(self._grid_items)%3, padx=10, pady=10)
+                tile.grid_propagate(False)
+                
+                name_lbl = ctk.CTkLabel(tile, text=f"Employee: {uid}", font=ctk.CTkFont(size=12, weight="bold"))
+                name_lbl.pack(pady=(10, 5))
+                
+                screen_lbl = ctk.CTkLabel(tile, text="Loading Screen...", font=ctk.CTkFont(size=10), text_color=C_MUTED)
+                screen_lbl.pack(expand=True, fill="both", padx=10)
+                
+                status_lbl = ctk.CTkLabel(tile, text="Live • Capturing", font=ctk.CTkFont(size=9), text_color=C_GREEN)
+                status_lbl.pack(pady=(0, 10))
+                
+                self._grid_items[uid] = {"frame": tile, "label": screen_lbl, "status": status_lbl}
+            
+            # Update image
+            b64 = s.get("image_base64")
+            if b64:
+                try:
+                    img_bytes = base64.b64decode(b64)
+                    img = Image.open(io.BytesIO(img_bytes))
+                    photo = ctk.CTkImage(light_image=img, dark_image=img, size=(340, 180))
+                    self._grid_items[uid]["label"].configure(image=photo, text="")
+                    self._grid_items[uid]["label"]._image = photo
+                    self._grid_items[uid]["status"].configure(text=f"Live • Last sync: {s.get('timestamp','?')[-8:]}")
+                except Exception: pass
 
     def _switch_tab(self, tab_id: str) -> None:
         self._active_tab = tab_id
@@ -768,6 +927,9 @@ class AdminPanel(ctk.CTk):
             elif status == "Break":
                 status_text = f"○ {status}"
                 status_color = C_AMBER
+            else:
+                status_text = f"✖ Offline"
+                status_color = C_RED
 
             if eid in self._emp_rows:
                 # Update
@@ -1112,7 +1274,7 @@ class AdminPanel(ctk.CTk):
 
             docs = list(col.find(query, {"_id": 0}).limit(50))
             for d in docs:
-                status_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE}.get(d.get("status", ""), C_MUTED)
+                status_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(d.get("status", ""), C_MUTED)
                 row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
                 row.pack(fill="x", pady=2)
                 row.pack_propagate(False)
@@ -1152,6 +1314,8 @@ class AdminPanel(ctk.CTk):
             threading.Thread(target=self._refresh_task_list, daemon=True).start()
         elif self._active_tab == "attendance":
             threading.Thread(target=self._refresh_attendance, daemon=True).start()
+        elif self._active_tab == "live_grid":
+            threading.Thread(target=self._refresh_live_grid, daemon=True).start()
         self.after(POLL_INTERVAL_MS, self._do_poll)
 
     # ------------------------------------------------------------------
