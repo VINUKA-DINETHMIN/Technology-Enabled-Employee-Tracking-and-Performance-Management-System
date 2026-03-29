@@ -274,6 +274,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                       command=self._resend_mfa).pack(side="left", expand=True, padx=4)
         ctk.CTkButton(ctrl_frame, text="Force Screenshot", fg_color="#7c3aed", hover_color="#6d28d9", height=38, 
                       command=lambda: self._force_screenshot(emp_id)).pack(side="left", expand=True, padx=4)
+        ctk.CTkButton(ctrl_frame, text="Live Camera", fg_color=C_RED, hover_color="#b91c1c", height=38, 
+                      command=lambda: LiveCamViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
 
     def _resend_mfa(self) -> None:
         from common.email_utils import send_mfa_setup_email
@@ -410,6 +412,77 @@ class ScreenshotViewer(ctk.CTkToplevel):
             
         except Exception as exc:
             ctk.CTkLabel(self, text=f"Failed to load image: {exc}", text_color=C_RED, wraplength=400).pack(expand=True)
+
+class LiveCamViewer(ctk.CTkToplevel):
+    """
+    Real-time camera feed viewer that polls MongoDB for latest snapshots.
+    """
+    def __init__(self, parent, user_id: str, db: Optional[MongoDBClient]):
+        super().__init__(parent)
+        self.user_id = user_id
+        self._db = db
+        self.title(f"Live Cam — {user_id}")
+        self.geometry("680x560")
+        self.attributes("-topmost", True)
+        self.configure(fg_color=C_BG)
+
+        self._lbl = ctk.CTkLabel(self, text="Initializing Stream...", font=ctk.CTkFont(size=14), text_color=C_MUTED)
+        self._lbl.pack(expand=True, fill="both", padx=20, pady=20)
+
+        self._status_lbl = ctk.CTkLabel(self, text="Connecting to remote device...", font=ctk.CTkFont(size=11), text_color=C_AMBER)
+        self._status_lbl.pack(pady=(0, 10))
+
+        # Send command to start streaming
+        self._send_command("start_live_cam")
+        
+        self._closed = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._update_loop()
+
+    def _send_command(self, cmd_type: str):
+        if not self._db or not self._db.is_connected: return
+        try:
+            col = self._db.get_collection("commands")
+            if col is not None:
+                col.insert_one({
+                    "user_id": self.user_id,
+                    "command": cmd_type,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "status": "pending"
+                })
+        except Exception: pass
+
+    def _update_loop(self):
+        if self._closed or not self._db or not self._db.is_connected: return
+        
+        try:
+            import base64, io
+            from PIL import Image
+            
+            col = self._db.get_collection("camera_streams")
+            if col is not None:
+                doc = col.find_one({"user_id": self.user_id})
+                if doc and doc.get("status") == "streaming":
+                    b64 = doc.get("image_base64")
+                    if b64:
+                        img_bytes = base64.b64decode(b64)
+                        img = Image.open(io.BytesIO(img_bytes))
+                        # Display
+                        photo = ctk.CTkImage(light_image=img, dark_image=img, size=(640, 480))
+                        self._lbl.configure(image=photo, text="")
+                        self._lbl._image = photo # Keep reference
+                        self._status_lbl.configure(text=f"Live • Last Update: {doc.get('timestamp','?')[-8:]}", text_color=C_GREEN)
+                elif doc and doc.get("status") == "off":
+                    self._status_lbl.configure(text="Stream was stopped by employee system.", text_color=C_RED)
+        except Exception as e:
+            self._status_lbl.configure(text=f"Update failed: {e}", text_color=C_RED)
+
+        self.after(1000, self._update_loop)
+
+    def _on_close(self):
+        self._closed = True
+        self._send_command("stop_live_cam")
+        self.destroy()
 
 class AdminPanel(ctk.CTk):
     """
