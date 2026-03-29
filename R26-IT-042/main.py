@@ -34,6 +34,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -368,32 +369,46 @@ class Application:
                 self._cam_streaming = True
                 
                 def stream_loop():
-                    cap = cv2.VideoCapture(0)
                     col = self._db_client.get_collection("camera_streams")
-                    while self._cam_streaming and not self._shutdown_event.is_set():
-                        ret, frame = cap.read()
-                        if ret:
-                            # Resize for performance
-                            frame = cv2.resize(frame, (320, 240))
-                            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                            b64 = base64.b64encode(buffer).decode('utf-8')
-                            
-                            # Upload to DB
-                            if col is not None:
-                                col.update_one(
-                                    {"user_id": self._user_id},
-                                    {"$set": {
-                                        "image_base64": b64,
-                                        "timestamp": datetime.utcnow().isoformat(),
-                                        "status": "streaming"
-                                    }},
-                                    upsert=True
-                                )
-                        time.sleep(1.0) # 1 FPS
-                    cap.release()
-                    if col is not None:
-                        col.update_one({"user_id": self._user_id}, {"$set": {"status": "off"}})
-                    log.info("Live camera stream stopped")
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        log.error("LIVE CAM: Could not open camera.")
+                        if col is not None:
+                            col.update_one({"user_id": self._user_id}, {"$set": {"status": "off", "error": "Camera unavailable"}}, upsert=True)
+                        self._cam_streaming = False
+                        return
+
+                    log.info("LIVE CAM: Camera stream started.")
+                    try:
+                        while self._cam_streaming and not self._shutdown_event.is_set():
+                            ret, frame = cap.read()
+                            if ret:
+                                # Resize and encode
+                                frame = cv2.resize(frame, (320, 240))
+                                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                                b64 = base64.b64encode(buffer).decode('utf-8')
+                                
+                                if col is not None:
+                                    col.update_one(
+                                        {"user_id": self._user_id},
+                                        {"$set": {
+                                            "image_base64": b64,
+                                            "timestamp": datetime.utcnow().isoformat(),
+                                            "status": "streaming"
+                                        }},
+                                        upsert=True
+                                    )
+                            else:
+                                log.warning("LIVE CAM: Failed to capture frame.")
+                            time.sleep(1.0)
+                    except Exception as e:
+                        log.error("LIVE CAM: Loop error: %s", e)
+                    finally:
+                        cap.release()
+                        if col is not None:
+                            col.update_one({"user_id": self._user_id}, {"$set": {"status": "off"}})
+                        self._cam_streaming = False
+                        log.info("LIVE CAM: Camera stream stopped.")
 
                 threading.Thread(target=stream_loop, daemon=True).start()
 

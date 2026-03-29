@@ -277,6 +277,24 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkButton(ctrl_frame, text="Live Camera", fg_color=C_RED, hover_color="#b91c1c", height=38, 
                       command=lambda: LiveCamViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
 
+    def _force_screenshot(self, emp_id: str) -> None:
+        if not self._db or not self._db.is_connected: return
+        import uuid
+        try:
+            col = self._db.get_collection("commands")
+            if col is not None:
+                now = datetime.utcnow()
+                expires = (now + timedelta(minutes=5)).isoformat()
+                col.insert_one({
+                    "command_id": str(uuid.uuid4()),
+                    "target_user_id": emp_id,
+                    "command_type": "force_screenshot",
+                    "status": "pending",
+                    "timestamp": now.isoformat(),
+                    "expires_at": expires
+                })
+        except Exception: pass
+
     def _resend_mfa(self) -> None:
         from common.email_utils import send_mfa_setup_email
         email = self._emp.get("email")
@@ -441,19 +459,27 @@ class LiveCamViewer(ctk.CTkToplevel):
 
     def _send_command(self, cmd_type: str):
         if not self._db or not self._db.is_connected: return
+        import uuid
         try:
             col = self._db.get_collection("commands")
             if col is not None:
+                now = datetime.utcnow()
+                expires = (now + timedelta(minutes=5)).isoformat()
                 col.insert_one({
-                    "user_id": self.user_id,
-                    "command": cmd_type,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status": "pending"
+                    "command_id": str(uuid.uuid4()),
+                    "target_user_id": self.user_id,
+                    "command_type": cmd_type,
+                    "status": "pending",
+                    "timestamp": now.isoformat(),
+                    "expires_at": expires
                 })
         except Exception: pass
 
     def _update_loop(self):
-        if self._closed or not self._db or not self._db.is_connected: return
+        if self._closed or not self.winfo_exists(): return
+        if not self._db or not self._db.is_connected: 
+            self.after(1000, self._update_loop)
+            return
         
         try:
             import base64, io
@@ -462,22 +488,29 @@ class LiveCamViewer(ctk.CTkToplevel):
             col = self._db.get_collection("camera_streams")
             if col is not None:
                 doc = col.find_one({"user_id": self.user_id})
-                if doc and doc.get("status") == "streaming":
-                    b64 = doc.get("image_base64")
-                    if b64:
-                        img_bytes = base64.b64decode(b64)
-                        img = Image.open(io.BytesIO(img_bytes))
-                        # Display
-                        photo = ctk.CTkImage(light_image=img, dark_image=img, size=(640, 480))
-                        self._lbl.configure(image=photo, text="")
-                        self._lbl._image = photo # Keep reference
-                        self._status_lbl.configure(text=f"Live • Last Update: {doc.get('timestamp','?')[-8:]}", text_color=C_GREEN)
-                elif doc and doc.get("status") == "off":
-                    self._status_lbl.configure(text="Stream was stopped by employee system.", text_color=C_RED)
+                if doc:
+                    status = doc.get("status")
+                    if status == "streaming":
+                        b64 = doc.get("image_base64")
+                        if b64:
+                            img_bytes = base64.b64decode(b64)
+                            img = Image.open(io.BytesIO(img_bytes))
+                            # Display
+                            photo = ctk.CTkImage(light_image=img, dark_image=img, size=(640, 480))
+                            self._lbl.configure(image=photo, text="")
+                            self._lbl._image = photo # Keep reference
+                            self._status_lbl.configure(text=f"Live • Last Update: {doc.get('timestamp','?')[-8:]}", text_color=C_GREEN)
+                    elif status == "off":
+                        err = doc.get("error", "Stream stopped by employee system.")
+                        self._status_lbl.configure(text=err, text_color=C_RED)
+                else:
+                    self._status_lbl.configure(text="Waiting for remote device to respond...", text_color=C_AMBER)
         except Exception as e:
-            self._status_lbl.configure(text=f"Update failed: {e}", text_color=C_RED)
-
-        self.after(1000, self._update_loop)
+            if self.winfo_exists():
+                self._status_lbl.configure(text=f"Update failed: {e}", text_color=C_RED)
+        
+        if self.winfo_exists():
+            self.after(1000, self._update_loop)
 
     def _on_close(self):
         self._closed = True
