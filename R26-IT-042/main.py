@@ -86,6 +86,7 @@ class Application:
         self._root: Optional[ctk.CTk] = None
         self._liveness_score = 1.0
         self._cam_streaming = False
+        self._screen_streaming = False
 
     # ------------------------------------------------------------------
     # Startup
@@ -407,8 +408,9 @@ class Application:
                     log.error("Remote screenshot execution failed: %s", e)
                     raise
 
-            # --- Handler: Live Cam ---
+            # --- Handler: Live Cam & Screen ---
             self._cam_streaming = False
+            self._screen_streaming = False
             
             def handle_start_cam(cmd: dict):
                 if self._cam_streaming: return
@@ -463,9 +465,54 @@ class Application:
                 log.info("Stopping live camera stream")
                 self._cam_streaming = False
 
+            def handle_start_screen(cmd: dict):
+                if self._screen_streaming: return
+                log.info("Starting live screen stream for admin")
+                self._screen_streaming = True
+                
+                def screen_loop():
+                    import pyautogui, io
+                    col = self._db_client.get_collection("screen_streams")
+                    try:
+                        while self._screen_streaming and not self._shutdown_event.is_set():
+                            # Capture
+                            img = pyautogui.screenshot()
+                            # Resize to reasonable size
+                            img = img.resize((640, 360))
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=40)
+                            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                            
+                            if col is not None:
+                                col.update_one(
+                                    {"user_id": self._user_id},
+                                    {"$set": {
+                                        "image_base64": b64,
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "status": "streaming"
+                                    }},
+                                    upsert=True
+                                )
+                            time.sleep(2.0) # Slightly slower for screen
+                    except Exception as e:
+                        log.error("LIVE SCREEN: Loop error: %s", e)
+                    finally:
+                        if col is not None:
+                            col.update_one({"user_id": self._user_id}, {"$set": {"status": "off"}})
+                        self._screen_streaming = False
+                        log.info("LIVE SCREEN: Screen stream stopped.")
+
+                threading.Thread(target=screen_loop, daemon=True).start()
+
+            def handle_stop_screen(cmd: dict):
+                log.info("Stopping live screen stream")
+                self._screen_streaming = False
+            
             poller.register_handler("force_screenshot", handle_screenshot)
             poller.register_handler("start_live_cam", handle_start_cam)
             poller.register_handler("stop_live_cam", handle_stop_cam)
+            poller.register_handler("start_live_screen", handle_start_screen)
+            poller.register_handler("stop_live_screen", handle_stop_screen)
             
             # Start polling
             poller.start()
