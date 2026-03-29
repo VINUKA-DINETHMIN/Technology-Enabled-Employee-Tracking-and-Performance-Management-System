@@ -24,6 +24,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import customtkinter as ctk
 import tkinter as tk
+from tkinter import messagebox
 
 from common.database import MongoDBClient
 from config.settings import settings
@@ -148,9 +149,11 @@ class BreakConfigPopup(ctk.CTkToplevel):
             fixed_dur = 60 if key == "lunch" else 15
             
             ctk.CTkEntry(row, textvariable=t_var, width=80, placeholder_text="HH:MM").pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=f"({fixed_dur} min)", text_color=C_TEAL, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=4)
+            d_var = ctk.StringVar(value=str(cfg.get("duration_minutes", fixed_dur)))
+            ctk.CTkEntry(row, textvariable=d_var, width=50).pack(side="left", padx=2)
+            ctk.CTkLabel(row, text="min", text_color=C_TEAL, font=ctk.CTkFont(size=11)).pack(side="left")
             
-            self._entries[key] = {"time_var": t_var, "duration": fixed_dur}
+            self._entries[key] = {"time_var": t_var, "dur_var": d_var}
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=12)
@@ -172,7 +175,7 @@ class BreakConfigPopup(ctk.CTkToplevel):
         cfg = {}
         for key, ev in self._entries.items():
             cfg[key] = {"start": ev["time_var"].get().strip(),
-                        "duration_minutes": ev["duration"]}
+                        "duration_minutes": int(ev["dur_var"].get().strip() or 15)}
         try:
             from C3_activity_monitoring.src.break_manager import BreakManager
             bm = BreakManager(user_id=self._user_id)
@@ -197,6 +200,7 @@ class TaskCard(ctk.CTkFrame):
         self._timer_running = False
         self._timer_start: Optional[float] = None
         self._timer_label: Optional[ctk.CTkLabel] = None
+        self._closed = False
         self._build()
 
     def _build(self) -> None:
@@ -319,7 +323,7 @@ class TaskCard(ctk.CTkFrame):
             mb.showerror("Error", str(exc))
 
     def _tick_timer(self) -> None:
-        if not self._timer_running or self._timer_start is None:
+        if self._closed or not self.winfo_exists() or not self._timer_running or self._timer_start is None:
             return
         elapsed = time.time() - self._timer_start
         if self._timer_label:
@@ -374,10 +378,9 @@ class EmployeePanel(ctk.CTkToplevel):
         self._emp = employee
         self._db = db
         self._user_id = employee.get("employee_id", "?")
-        self._session_id = session_id or str(uuid.uuid4())
-        self._bm = break_manager
         self._session_start = time.time()
         self._known_task_ids: set = set()
+        self._closed = False
 
         emp_name = employee.get("full_name", self._user_id)
         self.title(f"WorkPlus — {emp_name}")
@@ -422,6 +425,9 @@ class EmployeePanel(ctk.CTkToplevel):
 
         ctk.CTkLabel(topbar, text="⬤ Monitoring Active",
                      font=ctk.CTkFont(size=11), text_color=C_GREEN).pack(side="right", padx=8)
+
+        ctk.CTkButton(topbar, text="Logout", width=70, height=28, fg_color=C_BORDER, hover_color=C_RED,
+                      font=ctk.CTkFont(size=11, weight="bold"), command=self._on_logout).pack(side="right", padx=16)
 
         # Tab bar
         tab_bar = ctk.CTkFrame(self, fg_color=C_SIDEBAR, corner_radius=0, height=44)
@@ -468,6 +474,9 @@ class EmployeePanel(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=20, pady=(16, 8))
         self._tasks_scroll = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._tasks_scroll.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        
+        # Initial load after a short delay to ensure UI is ready
+        self.after(500, self._refresh_tasks)
         return frame
 
     def _refresh_tasks(self) -> None:
@@ -510,8 +519,8 @@ class EmployeePanel(ctk.CTkToplevel):
 
         self._session_dur_lbl = ctk.CTkLabel(session_card, text="Duration: —",
                                               font=ctk.CTkFont(size=12), text_color=C_MUTED)
-        self._session_dur_lbl.pack(anchor="w", padx=16, pady=2)
-        self._tick_session_timer(session_card)
+        self._session_dur_lbl.pack(anchor="w", padx=16, pady=(2, 12))
+        self._tick_session_timer()
 
         # Productivity
         prod_card = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=14)
@@ -540,12 +549,38 @@ class EmployeePanel(ctk.CTkToplevel):
         self._next_break_lbl = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=13), text_color=C_TEAL)
         self._next_break_lbl.pack(anchor="w", padx=24, pady=4)
 
+        ctk.CTkButton(frame, text="🚀 Go on Break Now", fg_color=C_TEAL, hover_color=C_TEAL_D, height=44,
+                      font=ctk.CTkFont(size=14, weight="bold"), command=self._start_manual_break).pack(padx=20, pady=20, fill="x")
+
         return frame
 
-    def _tick_session_timer(self, parent) -> None:
+    def _start_manual_break(self) -> None:
+        if not self._bm:
+            import tkinter.messagebox as mb
+            mb.showerror("Error", "Break manager not initialized.")
+            return
+        
+        # Show a small choice dialog for manual break
+        popup = ctk.CTkToplevel(self)
+        popup.title("Select Break Type")
+        popup.geometry("300x250")
+        popup.attributes("-topmost", True)
+        
+        ctk.CTkLabel(popup, text="Which break are you taking?", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=20)
+        
+        def _take(btype):
+            popup.destroy()
+            self._bm.start_break_timer(btype)
+
+        ctk.CTkButton(popup, text="Lunch Break (60 min)", command=lambda: _take("lunch")).pack(pady=5, padx=20, fill="x")
+        ctk.CTkButton(popup, text="Short Break (15 min)", command=lambda: _take("short_1")).pack(pady=5, padx=20, fill="x")
+        ctk.CTkButton(popup, text="Cancel", fg_color=C_BORDER, command=popup.destroy).pack(pady=20, padx=20)
+
+    def _tick_session_timer(self) -> None:
+        if self._closed or not self.winfo_exists(): return
         elapsed = time.time() - self._session_start
         self._session_dur_lbl.configure(text=f"Duration: {_fmt_duration(elapsed)}")
-        self.after(1000, lambda: self._tick_session_timer(parent))
+        self.after(1000, self._tick_session_timer)
 
     def _refresh_status(self) -> None:
         if not self._db or not self._db.is_connected:
@@ -620,8 +655,19 @@ class EmployeePanel(ctk.CTkToplevel):
     # ------------------------------------------------------------------
 
     def _update_clock(self) -> None:
+        if self._closed or not self.winfo_exists(): return
         self._time_lbl.configure(text=datetime.now().strftime("%H:%M:%S"))
         self.after(1000, self._update_clock)
+
+    def _on_logout(self) -> None:
+        if tk.messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            self._closed = True
+            self.destroy()
+            # If parent has show_login, call it
+            if hasattr(self.master, "show_login"):
+                self.master.show_login()
+            elif hasattr(self.master, "deiconify"):
+                self.master.deiconify()
 
     # ------------------------------------------------------------------
     # Polling
@@ -633,9 +679,11 @@ class EmployeePanel(ctk.CTkToplevel):
         threading.Thread(target=self._refresh_attendance, daemon=True).start()
 
     def _start_polling(self) -> None:
+        if self._closed or not self.winfo_exists(): return
         self.after(POLL_TASKS_MS, self._poll)
 
     def _poll(self) -> None:
+        if self._closed or not self.winfo_exists(): return
         self._refresh_all()
         self.after(POLL_TASKS_MS, self._poll)
 

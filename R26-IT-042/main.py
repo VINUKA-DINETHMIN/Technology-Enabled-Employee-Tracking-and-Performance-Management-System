@@ -233,7 +233,10 @@ class Application:
             employee=self._employee,
             db=self._db_client,
             session_id=self._session_id,
+            break_manager=getattr(self, "_break_manager", None)
         )
+        # Add a helper to the root so panel can call it
+        root.show_login = self._restart_at_login
         panel.protocol("WM_DELETE_WINDOW", self._shutdown)
 
         # Log attendance sign-in
@@ -275,6 +278,21 @@ class Application:
         # REMOTE COMMANDS: Admin-to-Employee instructions
         self._start_thread("COMMANDS", self._start_command_poller)
 
+    def _restart_at_login(self) -> None:
+        """Called on logout to return to the login screen."""
+        log.info("Restarting at login...")
+        self._shutdown_monitoring()
+        if self._root:
+            self._root.destroy()
+        self._launch_login()
+
+    def _shutdown_monitoring(self) -> None:
+        self._shutdown_event.set()
+        for t in self._monitor_threads:
+            t.join(timeout=1.0)
+        self._monitor_threads = []
+        self._shutdown_event.clear()
+
     def _start_thread(self, name: str, target) -> None:
         t = threading.Thread(target=target, name=name, daemon=True)
         t.start()
@@ -284,7 +302,7 @@ class Application:
     def _start_c3(self) -> None:
         try:
             from C3_activity_monitoring.src.initialize_monitoring import start_monitoring
-            start_monitoring(
+            self._break_manager = start_monitoring(
                 user_id=self._user_id,
                 db_client=self._db_client,
                 alert_sender=self._alert_sender,
