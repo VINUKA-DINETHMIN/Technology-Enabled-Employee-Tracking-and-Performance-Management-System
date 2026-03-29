@@ -67,7 +67,7 @@ _FACE_LOCKOUT_MINUTES = 15
 _MAX_ATTEMPTS = 3
 
 # Face similarity threshold (cosine similarity of histogram embeddings)
-_FACE_THRESHOLD = 0.80
+_FACE_THRESHOLD = 0.65
 
 LOGO_PATH = _ROOT / "assets" / "logo.png"
 
@@ -500,7 +500,14 @@ class LoginWindow(ctk.CTk):
 
                 # Face similarity check
                 if len(faces) > 0 and stored_embedding:
-                    current_emb = self._compute_embedding(gray)
+                    # Sort to find largest face
+                    (fx, fy, fw, fh) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                    face_roi = gray[fy:fy+fh, fx:fx+fw]
+                    
+                    # Normalize contrast for matching
+                    face_roi = cv2.equalizeHist(face_roi)
+                    
+                    current_emb = self._compute_embedding(face_roi)
                     sim = self._cosine_similarity(current_emb, stored_embedding)
                     if sim >= _FACE_THRESHOLD:
                         verified_count += 1
@@ -510,7 +517,7 @@ class LoginWindow(ctk.CTk):
                 liveness = detector.get_result()
 
                 # Check pass conditions
-                if verified_count >= 10 and liveness.passed:
+                if verified_count >= 7 and liveness.passed:
                     cap.release()
                     detector.close()
                     self.after(0, lambda s=liveness.liveness_score: self._on_face_success(s))
@@ -524,7 +531,7 @@ class LoginWindow(ctk.CTk):
                     self.after(0, lambda b=blinks: self._face_status_var.set(
                         f"Checking identity… Please blink naturally. (blinks: {b})"
                     ))
-                elif verified_count < 10:
+                elif verified_count < 7:
                     self.after(0, lambda: self._face_status_var.set("Checking identity…"))
 
                 time.sleep(1 / 20)
@@ -547,10 +554,11 @@ class LoginWindow(ctk.CTk):
         except Exception:
             pass
 
-    def _compute_embedding(self, gray_frame) -> list:
+    def _compute_embedding(self, face_roi) -> list:
         try:
             import cv2
-            hist = cv2.calcHist([gray_frame], [0], None, [128], [0, 256])
+            # face_roi is already grayscale from the caller
+            hist = cv2.calcHist([face_roi], [0], None, [128], [0, 256])
             return [float(v[0]) for v in hist]
         except Exception:
             return []
@@ -588,7 +596,7 @@ class LoginWindow(ctk.CTk):
             lock_until = (datetime.utcnow() + timedelta(minutes=_FACE_LOCKOUT_MINUTES)).isoformat()
             try:
                 col = self._db.get_collection("employees")
-                if col:
+                if col is not None:
                     col.update_one({"employee_id": emp_id}, {"$set": {"locked_until": lock_until}})
             except Exception:
                 pass
@@ -651,7 +659,7 @@ class LoginWindow(ctk.CTk):
             }
 
             col = self._db.get_collection("sessions")
-            if col:
+            if col is not None:
                 col.insert_one(session_doc)
 
             # Log auth event
@@ -659,7 +667,7 @@ class LoginWindow(ctk.CTk):
 
             # Clear face_attempts and locked_until
             emp_col = self._db.get_collection("employees")
-            if emp_col:
+            if emp_col is not None:
                 emp_col.update_one(
                     {"employee_id": emp_id},
                     {"$unset": {"locked_until": ""}, "$set": {"last_login": datetime.utcnow().isoformat()}},
@@ -675,7 +683,7 @@ class LoginWindow(ctk.CTk):
     def _log_auth_event(self, event_type: str, emp_id: str, success: bool, extra: dict = None) -> None:
         try:
             col = self._db.get_collection("auth_events")
-            if col:
+            if col is not None:
                 col.insert_one({
                     "event_type":  event_type,
                     "employee_id": emp_id,

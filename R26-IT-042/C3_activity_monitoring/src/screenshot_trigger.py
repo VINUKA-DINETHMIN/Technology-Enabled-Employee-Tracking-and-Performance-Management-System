@@ -37,12 +37,18 @@ class ScreenshotTrigger:
         self,
         screenshot_dir: Optional[Path] = None,
         encryptor=None,
-        db_collection=None,
+        db_client=None,
     ) -> None:
         self._dir = Path(screenshot_dir or _DEFAULT_SCREENSHOT_DIR)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._encryptor = encryptor
-        self._db_col = db_collection
+        self._db_col = None
+        if db_client is not None:
+            try:
+                self._db_col = db_client.get_collection("screenshots")
+            except AttributeError:
+                # Fallback if a collection was passed directly
+                self._db_col = db_client
 
     def capture(
         self,
@@ -84,8 +90,14 @@ class ScreenshotTrigger:
 
             logger.info("Screenshot saved: %s (risk=%.1f)", file_path, risk_score)
 
-            # Persist metadata to MongoDB
-            self._save_metadata(user_id, session_id, str(file_path), risk_score, trigger_reason, len(raw_bytes))
+            # Persist metadata to MongoDB (include small preview for remote viewing)
+            import base64
+            # For the DB, we use a smaller JPEG to save space
+            db_buf = io.BytesIO()
+            screenshot.save(db_buf, format="JPEG", quality=50)
+            b64_img = base64.b64encode(db_buf.getvalue()).decode("utf-8")
+
+            self._save_metadata(user_id, session_id, str(file_path), risk_score, trigger_reason, len(raw_bytes), b64_img)
 
             return str(file_path)
 
@@ -96,7 +108,7 @@ class ScreenshotTrigger:
             logger.error("Screenshot capture failed: %s", exc)
             return None
 
-    def _save_metadata(self, user_id, session_id, path, risk_score, reason, size) -> None:
+    def _save_metadata(self, user_id, session_id, path, risk_score, reason, size, b64_img) -> None:
         if self._db_col is None:
             return
         try:
@@ -105,9 +117,11 @@ class ScreenshotTrigger:
                 user_id=user_id,
                 session_id=session_id,
                 file_path=path,
+                image_base64=b64_img,
                 trigger_reason=reason,
                 risk_score_at_capture=risk_score,
                 file_size_bytes=size,
+                encrypted=self._encryptor is not None
             )
             self._db_col.insert_one(doc.to_dict())
         except Exception as exc:

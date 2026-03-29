@@ -97,9 +97,12 @@ class _Settings:
     IDLE_THRESHOLD_SEC: int = int(os.environ.get("IDLE_THRESHOLD_SEC", "300"))
 
     # ------------------------------------------------------------------
-    # Productivity prediction
+    # SMTP Configuration (Email)
     # ------------------------------------------------------------------
-    PREDICTION_WINDOW_MINUTES: int = int(os.environ.get("PREDICTION_WINDOW_MINUTES", "15"))
+    SMTP_HOST: str = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.environ.get("SMTP_PORT", "587"))
+    SMTP_USER: str = os.environ.get("SMTP_USER", "")
+    SMTP_PASS: str = os.environ.get("SMTP_PASS", "")
 
     def validate(self) -> list[str]:
         """

@@ -49,6 +49,7 @@ class MouseTracker:
             Feature extraction window in seconds.
         """
         self._window_sec = window_sec
+        self._on_activity = None
         self._running = False
         self._listener = None
         self._lock = threading.Lock()
@@ -76,6 +77,8 @@ class MouseTracker:
                     # Prune entries outside extended buffer (3x window for stats)
                     cutoff = ts - self._window_sec * 3
                     self._positions = [p for p in self._positions if p[2] >= cutoff]
+                if self._on_activity:
+                    self._on_activity()
 
             def on_click(x: float, y: float, button, pressed: bool) -> None:
                 if pressed:
@@ -84,6 +87,8 @@ class MouseTracker:
                         self._clicks.append(ts)
                         cutoff = ts - self._window_sec * 3
                         self._clicks = [c for c in self._clicks if c >= cutoff]
+                    if self._on_activity:
+                        self._on_activity()
 
             self._listener = _m.Listener(on_move=on_move, on_click=on_click)
             self._listener.start()

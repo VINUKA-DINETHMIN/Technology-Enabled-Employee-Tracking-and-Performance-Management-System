@@ -140,7 +140,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         name = employee.get("full_name", emp_id)
 
         self.title(f"Employee Detail — {name}")
-        self.geometry("780x600")
+        self.geometry("780x700")
         self.configure(fg_color=C_BG)
         self.attributes("-topmost", True)
 
@@ -168,15 +168,37 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         progress.set(risk / 100.0)
         progress.pack(fill="x", padx=16, pady=(4, 12))
 
+        # Currently Active Task & Top App
+        if risk_doc:
+            status_frame = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
+            status_frame.pack(fill="x", pady=(0, 12))
+            
+            top_app = risk_doc.get("top_app", "None")
+            is_unproductive = top_app.lower() in ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
+            app_color = C_RED if is_unproductive else C_GREEN
+            
+            ctk.CTkLabel(status_frame, text="Current App Focus:", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(12, 0))
+            ctk.CTkLabel(status_frame, text=top_app.upper(), font=ctk.CTkFont(size=14, weight="bold"), text_color=app_color).pack(anchor="w", padx=16)
+
+            active_task = risk_doc.get("active_task_title", "No Active Task")
+            ctk.CTkLabel(status_frame, text="Active Working Task:", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(8, 0))
+            ctk.CTkLabel(status_frame, text=active_task, font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(0, 12))
+            
+            prod = risk_doc.get("productivity_score", 0.0)
+            ctk.CTkLabel(status_frame, text="Current Productivity:", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16)
+            ctk.CTkLabel(status_frame, text=f"{prod:.0f}%", font=ctk.CTkFont(size=18, weight="bold"), text_color=_risk_color(100-prod)).pack(anchor="w", padx=16, pady=(0, 12))
+
         # Contributing factors
         if risk_doc:
             factors = risk_doc.get("contributing_factors", [])
             if factors:
                 ff = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
                 ff.pack(fill="x", pady=(0, 12))
-                ctk.CTkLabel(ff, text="Contributing Factors", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
+                ctk.CTkLabel(ff, text="Anomaly Factors", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
                 for f in factors:
-                    ctk.CTkLabel(ff, text=f"  • {f.replace('_', ' ').title()}", font=ctk.CTkFont(size=12), text_color=C_AMBER).pack(anchor="w", padx=16)
+                    f_name = f.replace('_', ' ').title()
+                    f_color = C_RED if "unproductive" in f or "off_task" in f else C_AMBER
+                    ctk.CTkLabel(ff, text=f"  • {f_name}", font=ctk.CTkFont(size=12, weight="bold" if f_color==C_RED else "normal"), text_color=f_color).pack(anchor="w", padx=16)
                 ctk.CTkFrame(ff, fg_color="transparent", height=8).pack()
 
         # Alert history
@@ -201,63 +223,179 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         for t in tasks[:5]:
             row = ctk.CTkFrame(tf, fg_color=C_BORDER, corner_radius=8)
             row.pack(fill="x", padx=16, pady=3)
-            status_color = {
-                "pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN
-            }.get(t.get("status", ""), C_MUTED)
+            status_color = {"pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN, "paused": C_RED}.get(t.get("status", ""), C_MUTED)
             ctk.CTkLabel(row, text=t.get("title", "?"), text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
             ctk.CTkLabel(row, text=t.get("status", "").replace("_", " ").title(), text_color=status_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
         ctk.CTkFrame(tf, fg_color="transparent", height=8).pack()
 
-        # Force screenshot button
-        ctk.CTkButton(
-            body,
-            text="Force Screenshot",
-            fg_color="#7c3aed",
-            hover_color="#6d28d9",
-            height=38,
-            command=lambda: self._force_screenshot(emp_id),
-        ).pack(pady=(4, 0))
+        # Screenshots list
+        ssf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
+        ssf.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(ssf, text="Recent Screenshots", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
+        screens = self._get_screenshots(emp_id)
+        if not screens:
+            ctk.CTkLabel(ssf, text="No screenshots captured yet.", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(0, 12))
+        else:
+            for s in screens[:5]:
+                row = ctk.CTkFrame(ssf, fg_color=C_BORDER, corner_radius=8)
+                row.pack(fill="x", padx=16, pady=3)
+                reason = s.get("trigger_reason", "manual").title()
+                risk = s.get("risk_score_at_capture", 0.0)
+                ctk.CTkLabel(row, text=f"📸 {reason}", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
+                ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
+                
+                # Buttons to view
+                b64 = s.get("image_base64")
+                path = s.get("file_path", "")
+                
+                # Cloud Viewer (Primary)
+                if b64:
+                    ctk.CTkButton(row, text="View Cloud", width=70, height=24, fg_color=C_TEAL, hover_color=C_TEAL_D, 
+                                  font=ctk.CTkFont(size=10), command=lambda b=b64: ScreenshotViewer(self, b)).pack(side="right", padx=4)
+                
+                # Local Viewer (Secondary - Decrypts high-res)
+                if path and os.path.exists(path):
+                    ctk.CTkButton(row, text="View Local", width=70, height=24, fg_color=C_BLUE, hover_color="#2563eb", 
+                                  font=ctk.CTkFont(size=10), command=lambda p=path: ScreenshotViewer(self, p, is_path=True, user_id=emp_id)).pack(side="right", padx=4)
+                
+                # Folder Opener
+                if path:
+                    ctk.CTkButton(row, text="📁", width=28, height=24, fg_color=C_SIDEBAR, hover_color=C_BORDER, 
+                                  font=ctk.CTkFont(size=10), command=lambda p=path: self._open_file(p)).pack(side="right", padx=2)
+                
+                ctk.CTkLabel(row, text=_fmt_time(s.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right")
+            ctk.CTkFrame(ssf, fg_color="transparent", height=8).pack()
+
+        # Action Buttons
+        ctrl_frame = ctk.CTkFrame(body, fg_color="transparent")
+        ctrl_frame.pack(fill="x", pady=20)
+        
+        ctk.CTkButton(ctrl_frame, text="Resend MFA Email", fg_color=C_TEAL, hover_color=C_TEAL_D, height=38, 
+                      command=self._resend_mfa).pack(side="left", expand=True, padx=4)
+        ctk.CTkButton(ctrl_frame, text="Force Screenshot", fg_color="#7c3aed", hover_color="#6d28d9", height=38, 
+                      command=lambda: self._force_screenshot(emp_id)).pack(side="left", expand=True, padx=4)
+
+    def _resend_mfa(self) -> None:
+        from common.email_utils import send_mfa_setup_email
+        email = self._emp.get("email")
+        name = self._emp.get("full_name")
+        mfa_secret = self._emp.get("mfa_secret")
+        if not email or not mfa_secret:
+            messagebox.showerror("Error", "Missing email or MFA secret.")
+            return
+        if send_mfa_setup_email(email, name, mfa_secret):
+            messagebox.showinfo("Success", f"MFA email sent to {email}.")
+        else:
+            messagebox.showerror("Failed", "Check SMTP settings in .env.")
 
     def _latest_activity(self, emp_id: str) -> Optional[dict]:
         try:
             col = self._db.get_collection("activity_logs")
-            if col:
+            if col is not None:
                 return col.find_one({"user_id": emp_id}, sort=[("timestamp", -1)])
-        except Exception:
-            pass
+        except Exception: pass
         return None
 
     def _get_alerts(self, emp_id: str) -> list:
         try:
             col = self._db.get_collection("alerts")
-            if col:
+            if col is not None:
                 return list(col.find({"user_id": emp_id}, {"_id": 0}).sort("timestamp", -1).limit(10))
-        except Exception:
-            pass
+        except Exception: pass
         return []
 
     def _get_tasks(self, emp_id: str) -> list:
         try:
             col = self._db.get_collection("tasks")
-            if col:
+            if col is not None:
                 return list(col.find({"employee_id": emp_id}, {"_id": 0}).sort("assigned_at", -1).limit(10))
-        except Exception:
-            pass
+        except Exception: pass
         return []
+
+    def _get_screenshots(self, emp_id: str) -> list:
+        try:
+            col = self._db.get_collection("screenshots")
+            if col is not None:
+                return list(col.find({"user_id": emp_id}, {"_id": 0}).sort("timestamp", -1).limit(10))
+        except Exception: pass
+        return []
+
+    def _open_file(self, path: str) -> None:
+        try:
+            if not path: return
+            dir_path = os.path.dirname(path)
+            if sys.platform == "win32": os.startfile(dir_path)
+            else:
+                import subprocess
+                subprocess.call(["open", dir_path])
+        except Exception as exc: messagebox.showerror("Error", str(exc))
 
     def _force_screenshot(self, emp_id: str) -> None:
         try:
             from C3_activity_monitoring.src.screenshot_trigger import ScreenshotTrigger
             st = ScreenshotTrigger(db_client=self._db)
-            st.capture(user_id=emp_id, session_id="admin_forced", risk_score=100.0)
+            st.capture(user_id=emp_id, session_id="admin_forced", risk_score=0.0, trigger_reason="manual_force")
             messagebox.showinfo("Screenshot", f"Screenshot captured for {emp_id}.")
+        except Exception as exc: messagebox.showerror("Error", f"Screenshot failed: {exc}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Screenshot Viewer Window
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class ScreenshotViewer(ctk.CTkToplevel):
+    def __init__(self, parent, data: str, title: str = "Screenshot Viewer", is_path: bool = False, user_id: str = ""):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("900x650")
+        self.attributes("-topmost", True)
+        self.configure(fg_color=C_BG)
+
+        import base64
+        import io
+        from PIL import Image
+        from common.encryption import AESEncryptor
+
+        try:
+            if is_path:
+                p = Path(data)
+                if not p.exists():
+                    raise FileNotFoundError(f"File not found: {p}")
+                
+                raw_bytes = p.read_bytes()
+                
+                # PNG Signature check for legacy/unencrypted files
+                if raw_bytes.startswith(b"\x89PNG") or raw_bytes.startswith(b"\xff\xd8"):
+                    img_bytes = raw_bytes
+                    source_text = "Viewing Local File (Unencrypted)"
+                elif p.suffix == ".enc":
+                    # Decrypt high-quality local image
+                    enc = AESEncryptor()
+                    # Use user_id as associated data if available (matches ScreenshotTrigger logic)
+                    assoc = user_id.encode() if user_id else None
+                    img_bytes = enc.decrypt_bytes(raw_bytes, associated_data=assoc)
+                    source_text = "Viewing Local File (Secure Decrypted)"
+                else:
+                    img_bytes = raw_bytes
+                    source_text = "Viewing Local File"
+            else:
+                img_bytes = base64.b64decode(data)
+                source_text = "Viewing Cloud Preview (Optimized)"
+
+            img = Image.open(io.BytesIO(img_bytes))
+            
+            # Resize
+            display_w, display_h = 860, 540
+            img.thumbnail((display_w, display_h))
+            
+            self._photo = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+            self._lbl = ctk.CTkLabel(self, image=self._photo, text="")
+            self._lbl.pack(expand=True, padx=20, pady=20)
+            
+            ctk.CTkLabel(self, text=source_text, font=ctk.CTkFont(size=10), text_color=C_MUTED).pack(pady=(0, 10))
+            
         except Exception as exc:
-            messagebox.showerror("Error", f"Screenshot failed: {exc}")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Main Admin Panel
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            ctk.CTkLabel(self, text=f"Failed to load image: {exc}", text_color=C_RED, wraplength=400).pack(expand=True)
 
 class AdminPanel(ctk.CTk):
     """
@@ -433,26 +571,27 @@ class AdminPanel(ctk.CTk):
             emps_col     = self._db.get_collection("employees")
 
             # Count active sessions
-            online_cnt = sessions_col.count_documents({"status": "active"}) if sessions_col else 0
+            online_cnt = sessions_col.count_documents({"status": "active"}) if sessions_col is not None else 0
             self._card_online.set_value(str(online_cnt))
 
             # Alerts today
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            alerts_today = alerts_col.count_documents({"timestamp": {"$gte": today_start.isoformat()}}) if alerts_col else 0
+            alerts_today = alerts_col.count_documents({"timestamp": {"$gte": today_start.isoformat()}}) if alerts_col is not None else 0
             self._card_alerts.set_value(str(alerts_today))
 
             # High risk
-            high_risk = activity_col.count_documents({"composite_risk_score": {"$gte": 75}}) if activity_col else 0
+            high_risk = activity_col.count_documents({"composite_risk_score": {"$gte": 75}}) if activity_col is not None else 0
             self._card_highrisk.set_value(str(high_risk))
 
             # Avg productivity (last hour)
             pipeline = [{"$group": {"_id": None, "avg": {"$avg": "$productivity_score"}}}]
-            avg_result = list(activity_col.aggregate(pipeline)) if activity_col else []
+            avg_result = list(activity_col.aggregate(pipeline)) if activity_col is not None else []
             avg_prod = avg_result[0]["avg"] if avg_result else 0.0
             self._card_avg_prod.set_value(f"{avg_prod:.0f}%")
 
             # Employee rows
-            employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0, "mfa_secret": 0}).limit(50)) if emps_col else []
+            # Employee rows (exclude heavy fields but keep enough for details)
+            employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}).limit(50)) if emps_col is not None else []
             self._update_employee_list(employees, activity_col)
 
         except Exception as exc:
@@ -460,41 +599,75 @@ class AdminPanel(ctk.CTk):
             logging.getLogger(__name__).error("Dashboard refresh error: %s", exc)
 
     def _update_employee_list(self, employees: list, activity_col) -> None:
-        for widget in self._emp_list_frame.winfo_children():
-            widget.destroy()
+        if not hasattr(self, "_emp_rows"):
+            self._emp_rows = {} # {emp_id: {"frame": frame, "labels": {name: label}}}
 
+        # Sync IDs
+        new_ids = {e.get("employee_id") for e in employees if e.get("employee_id")}
+        old_ids = set(self._emp_rows.keys())
+
+        # 1. Remove rows
+        for eid in (old_ids - new_ids):
+            try:
+                self._emp_rows[eid]["frame"].pack_forget()
+                self._emp_rows[eid]["frame"].destroy()
+            except Exception: pass
+            del self._emp_rows[eid]
+
+        # 2. Update or Create
         for emp in employees:
-            emp_id = emp.get("employee_id", "?")
-            # Get latest activity
+            eid = emp.get("employee_id")
+            if not eid: continue
+            
             act = None
             try:
                 if activity_col:
-                    act = activity_col.find_one({"user_id": emp_id}, sort=[("timestamp", -1)])
-            except Exception:
-                pass
+                    act = activity_col.find_one({"user_id": eid}, sort=[("timestamp", -1)])
+            except Exception: pass
 
             risk = act.get("composite_risk_score", 0.0) if act else 0.0
             risk_color = _risk_color(risk)
             status = "Break" if (act and act.get("in_break")) else ("Idle" if risk == 0 else "Active")
-            location = act.get("location_mode", "—") if act else "—"
+            loc = (act.get("location_mode") or "—").title() if act else "—"
             last_seen = _fmt_time(act.get("timestamp", "")) if act else "—"
+            name = emp.get("full_name", eid)
 
-            row = ctk.CTkFrame(self._emp_list_frame, fg_color=C_CARD, corner_radius=10, height=44)
-            row.pack(fill="x", pady=3)
-            row.pack_propagate(False)
+            if eid in self._emp_rows:
+                # Update
+                labels = self._emp_rows[eid]["labels"]
+                labels["name"].configure(text=name)
+                labels["risk"].configure(text=f"{risk:.0f}", text_color=risk_color)
+                labels["loc"].configure(text=loc)
+                labels["status"].configure(text=status)
+                labels["seen"].configure(text=last_seen)
+            else:
+                # Create
+                row = ctk.CTkFrame(self._emp_list_frame, fg_color=C_CARD, corner_radius=10, height=44)
+                row.pack(fill="x", pady=3)
+                row.pack_propagate(False)
 
-            ctk.CTkLabel(row, text=emp.get("full_name", emp_id), text_color=C_TEXT, font=ctk.CTkFont(size=12), width=180, anchor="w").pack(side="left", padx=8)
-            ctk.CTkLabel(row, text=emp_id, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=f"{risk:.0f}", text_color=risk_color, font=ctk.CTkFont(size=12, weight="bold"), width=80, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=location.title(), text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=status, text_color=C_TEXT, font=ctk.CTkFont(size=11), width=90, anchor="w").pack(side="left")
-            ctk.CTkLabel(row, text=last_seen, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w").pack(side="left")
-            ctk.CTkButton(
-                row, text="Details", width=72, height=28,
-                fg_color=C_BORDER, hover_color=C_BLUE,
-                font=ctk.CTkFont(size=11),
-                command=lambda e=emp: EmployeeDetailWindow(self, e, self._db),
-            ).pack(side="right", padx=8)
+                l_name = ctk.CTkLabel(row, text=name, text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold"), width=180, anchor="w")
+                l_name.pack(side="left", padx=8)
+                l_id = ctk.CTkLabel(row, text=eid, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_id.pack(side="left")
+                l_risk = ctk.CTkLabel(row, text=f"{risk:.0f}", text_color=risk_color, font=ctk.CTkFont(size=12, weight="bold"), width=80, anchor="w")
+                l_risk.pack(side="left")
+                l_loc = ctk.CTkLabel(row, text=loc, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_loc.pack(side="left")
+                l_status = ctk.CTkLabel(row, text=status, text_color=C_TEXT, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_status.pack(side="left")
+                l_seen = ctk.CTkLabel(row, text=last_seen, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_seen.pack(side="left")
+
+                ctk.CTkButton(
+                    row, text="Details", width=72, height=28, fg_color=C_BORDER, hover_color=C_BLUE,
+                    font=ctk.CTkFont(size=11), command=lambda e=emp: EmployeeDetailWindow(self, e, self._db)
+                ).pack(side="right", padx=8)
+
+                self._emp_rows[eid] = {
+                    "frame": row,
+                    "labels": {"name": l_name, "id": l_id, "risk": l_risk, "loc": l_loc, "status": l_status, "seen": l_seen}
+                }
 
     # ------------------------------------------------------------------
     # Employees Tab
@@ -546,7 +719,7 @@ class AdminPanel(ctk.CTk):
             w.destroy()
         try:
             col = self._db.get_collection("alerts")
-            if not col:
+            if col is None:
                 return
             alerts = list(col.find({}, {"_id": 0}).sort("timestamp", -1).limit(50))
             for alert in alerts:
@@ -673,7 +846,7 @@ class AdminPanel(ctk.CTk):
             return
         try:
             col = self._db.get_collection("employees")
-            if col:
+            if col is not None:
                 emps = list(col.find({}, {"employee_id": 1, "full_name": 1, "_id": 0}))
                 values = [f"{e['employee_id']} — {e.get('full_name','')}" for e in emps]
                 self._task_emp_dd.configure(values=values or ["No employees"])
@@ -713,7 +886,7 @@ class AdminPanel(ctk.CTk):
 
         try:
             col = self._db.get_collection("tasks")
-            if col:
+            if col is not None:
                 col.insert_one(task_doc)
                 messagebox.showinfo("Success", f"Task '{title}' assigned to {emp_id}.")
                 self._task_title_var.set("")

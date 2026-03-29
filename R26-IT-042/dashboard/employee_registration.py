@@ -41,6 +41,7 @@ import tkinter as tk
 
 from common.database import MongoDBClient
 from config.settings import settings
+from common.email_utils import send_mfa_setup_email
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -62,7 +63,13 @@ LOCATIONS   = ["Office", "Home", "Hybrid"]
 
 
 def _validate_email(email: str) -> bool:
-    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+    """
+    Stricter email validation. 
+    Prevents common typos like trailing slashes or multiple dots.
+    """
+    # Strict regex for common email formats
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    return bool(re.match(pattern, email.strip().lower()))
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -271,30 +278,50 @@ class FaceCaptureWindow(ctk.CTkToplevel):
 
     def _do_register(self) -> None:
         try:
-            # 1. Convert frames to base64
-            import numpy as np
+            # 1. Convert frames to base64 and extract face embeddings
             from PIL import Image
+            import cv2
+            import numpy as np
+            
             face_b64s = []
-            face_embeddings = []
+            valid_embeddings = []
+
+            # Initialize face detection for cropping
+            cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
             for frame in self._captured_frames:
+                # Save full frame for visual reference (base64)
                 img = Image.fromarray(frame)
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=85)
                 face_b64s.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
 
-                # OpenCV DNN embedding
-                emb = self._compute_embedding(frame)
-                if emb is not None:
-                    face_embeddings.extend(emb)
+                # Extract embedding only for the FACE region
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+                faces = cascade.detectMultiScale(gray, 1.1, 5)
+                
+                if len(faces) > 0:
+                    # Take the largest face
+                    (x, y, w, h) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+                    face_roi = gray[y:y+h, x:x+w]
+                    
+                    # Normalize lighting/contrast
+                    face_roi = cv2.equalizeHist(face_roi)
+                    
+                    # Compute histogram for just the face
+                    hist = cv2.calcHist([face_roi], [0], None, [128], [0, 256])
+                    valid_embeddings.append([float(v[0]) for v in hist])
 
-            # Average embedding
-            if face_embeddings:
-                avg_emb = [v / len(self._captured_frames) for v in face_embeddings]
-            else:
-                avg_emb = []
-
-            # 2. Hash password
+            # 2. Average the embeddings across all samples for stability
+            avg_emb = []
+            if valid_embeddings:
+                # Transpose and average each bin
+                num_bins = len(valid_embeddings[0])
+                for bin_idx in range(num_bins):
+                    avg_val = sum(emb[bin_idx] for emb in valid_embeddings) / len(valid_embeddings)
+                    avg_emb.append(avg_val)
+            
+            # 3. Hash password
             import bcrypt
             pw = self._form.get("password", "password123").encode()
             pw_hash = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
@@ -329,82 +356,26 @@ class FaceCaptureWindow(ctk.CTkToplevel):
             col.insert_one(doc)
 
             # 6. Send MFA email
-            self._send_mfa_email(self._form["email"], self._form["full_name"], mfa_secret)
+            sent_ok = send_mfa_setup_email(self._form["email"], self._form["full_name"], mfa_secret)
 
-            self.after(0, lambda: self._on_success())
+            self.after(0, lambda: self._on_success(sent_ok))
         except Exception as exc:
             self.after(0, lambda e=exc: self._on_error(str(e)))
 
     def _compute_embedding(self, frame_rgb) -> Optional[list]:
-        """Compute face embedding using OpenCV DNN or return None."""
-        try:
-            import cv2
-            import numpy as np
-            # Convert to BGR for OpenCV
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            # Use basic pixel histogram as fallback embedding (128 bins)
-            hist = cv2.calcHist([gray], [0], None, [128], [0, 256])
-            return [float(v[0]) for v in hist]
-        except Exception:
-            return None
+        """Deprecated: Use face-aware cropping instead."""
+        return None
 
-    def _send_mfa_email(self, email: str, name: str, mfa_secret: str) -> None:
-        """Send MFA QR code to employee email."""
-        try:
-            import qrcode
-            totp_uri = f"otpauth://totp/WorkPlus:{email}?secret={mfa_secret}&issuer=WorkPlus"
-            qr_img = qrcode.make(totp_uri)
 
-            buf = io.BytesIO()
-            qr_img.save(buf, format="PNG")
-            qr_bytes = buf.getvalue()
-
-            smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-            smtp_port = int(os.environ.get("SMTP_PORT", 587))
-            smtp_user = os.environ.get("SMTP_USER", "")
-            smtp_pass = os.environ.get("SMTP_PASS", "")
-
-            if not smtp_user or not smtp_pass:
-                import logging
-                logging.getLogger(__name__).warning("SMTP credentials not set — MFA email not sent.")
-                return
-
-            msg = MIMEMultipart("related")
-            msg["Subject"] = "WorkPlus — Your MFA Setup"
-            msg["From"] = smtp_user
-            msg["To"] = email
-
-            html = f"""
-            <html><body>
-            <h2 style="color:#14b8a6">Welcome to WorkPlus, {name}!</h2>
-            <p>Scan the QR code below with <strong>Google Authenticator</strong> to set up your MFA.</p>
-            <img src="cid:qrcode" style="width:200px"><br>
-            <p style="color:#64748b;font-size:12px">Or enter manually: <code>{mfa_secret}</code></p>
-            </body></html>
-            """
-            msg.attach(MIMEText(html, "html"))
-            img_part = MIMEImage(qr_bytes, name="qrcode.png")
-            img_part.add_header("Content-ID", "<qrcode>")
-            msg.attach(img_part)
-
-            with smtplib.SMTP(smtp_host, smtp_port) as s:
-                s.ehlo()
-                s.starttls()
-                s.login(smtp_user, smtp_pass)
-                s.sendmail(smtp_user, email, msg.as_string())
-
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).error("MFA email send error: %s", exc)
-
-    def _on_success(self) -> None:
+    def _on_success(self, email_sent: bool = True) -> None:
         self._running = False
-        messagebox.showinfo(
-            "Registration Complete",
-            f"Employee '{self._form['full_name']}' registered successfully.\n"
-            "MFA setup email has been sent.",
-        )
+        msg = f"Employee '{self._form['full_name']}' registered successfully.\n\n"
+        if email_sent:
+            msg += "MFA setup email has been sent."
+        else:
+            msg += "⚠️ WARNING: MFA setup email could NOT be sent. Please check SMTP settings in .env."
+            
+        messagebox.showinfo("Registration Complete", msg)
         self.destroy()
 
     def _on_error(self, msg: str) -> None:
@@ -522,7 +493,7 @@ class EmployeeRegistration(ctk.CTkToplevel):
             # Check uniqueness
             if self._db and self._db.is_connected:
                 col = self._db.get_collection("employees")
-                if col and col.find_one({"employee_id": self._emp_id.get().strip()}):
+                if col is not None and col.find_one({"employee_id": self._emp_id.get().strip()}):
                     set_err("emp_id", "Employee ID already exists.")
         if not _validate_email(self._email.get().strip()):
             set_err("email", "Invalid email address.")
@@ -532,6 +503,7 @@ class EmployeeRegistration(ctk.CTkToplevel):
             set_err("confirm_pw", "Passwords do not match.")
 
         if not valid:
+            messagebox.showwarning("Incomplete Form", "Please correct the errors in the form before proceeding.")
             return
 
         form_data = {
@@ -546,8 +518,13 @@ class EmployeeRegistration(ctk.CTkToplevel):
             "password":     self._password.get(),
         }
 
-        FaceCaptureWindow(self, form_data, self._db, self._admin_id)
-        self.withdraw()
+        try:
+            FaceCaptureWindow(self, form_data, self._db, self._admin_id)
+            self.withdraw()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("FaceCaptureWindow error: %s", exc, exc_info=True)
+            messagebox.showerror("Error", f"Failed to open face capture window:\n\n{exc}")
 
     def _init_db(self) -> MongoDBClient:
         db = MongoDBClient(uri=settings.MONGO_URI, db_name=settings.MONGO_DB_NAME)

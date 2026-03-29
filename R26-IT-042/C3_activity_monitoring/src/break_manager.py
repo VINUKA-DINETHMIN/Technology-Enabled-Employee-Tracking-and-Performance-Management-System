@@ -319,7 +319,7 @@ class BreakManager:
             return
         try:
             col = self._db.get_collection("policy_violations")
-            if col:
+            if col is not None:
                 col.insert_one({
                     "user_id": self._user_id,
                     "violation_type": "break_overrun",
@@ -423,7 +423,7 @@ class BreakManager:
         t.start()
 
     def _tick_countdown(self, win, remaining: int) -> None:
-        if remaining <= 0:
+        if remaining < -300:  # Hard limit 5 min overrun, then auto-close
             try:
                 win.destroy()
             except Exception:
@@ -431,9 +431,20 @@ class BreakManager:
             if self._monitoring_paused:
                 self.resume_monitoring()
             return
+            
         try:
             if self._countdown_label:
-                self._countdown_label.configure(text=_format_time(remaining))
+                # Format with minus sign for overruns
+                display_time = _format_time(abs(remaining))
+                if remaining < 0:
+                    display_time = f"-{display_time}"
+                    self._countdown_label.configure(text_color="#ef4444")  # C_RED
+                    win.title("BREAK OVERRUN!")
+                else:
+                    self._countdown_label.configure(text=display_time)
+                
+                self._countdown_label.configure(text=display_time)
+                
             win.after(1000, lambda: self._tick_countdown(win, remaining - 1))
         except Exception:
             pass

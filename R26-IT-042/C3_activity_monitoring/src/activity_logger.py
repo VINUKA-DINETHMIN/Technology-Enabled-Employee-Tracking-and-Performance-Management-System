@@ -57,6 +57,9 @@ _SCREENSHOT_CONSECUTIVE_THRESHOLD = 2
 # Log interval in seconds
 _LOG_INTERVAL = 60.0
 
+# Unproductive apps/sites list
+_UNPRODUCTIVE_APPS = ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
+
 
 def _risk_to_label(score: float) -> str:
     if score < _SOFT_WARN:
@@ -102,6 +105,10 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
         factors.append("low_liveness_score")
     if fv.get("geolocation_deviation", 0.0) > 50.0:
         factors.append("unusual_location")
+    if fv.get("top_app", "").lower() in _UNPRODUCTIVE_APPS:
+        factors.append("unproductive_app_usage")
+    if fv.get("active_task_id") is None and fv.get("typing_speed_wpm", 0.0) > 20:
+        factors.append("off_task_activity")
     if risk_score >= _HARD_WARN:
         factors.append("high_composite_risk")
     return factors
@@ -200,6 +207,22 @@ class ActivityLogger:
         # ── Extract feature vector ────────────────────────────────────
         fv = self._extractor.extract(in_break=in_break, break_type=break_type)
 
+        # ── Find Active Task ──────────────────────────────────────────
+        active_task_id = None
+        active_task_title = None
+        try:
+            if self._db and self._db.is_connected:
+                col = self._db.get_collection("tasks")
+                task = col.find_one({"employee_id": self._user_id, "status": "in_progress"})
+                if task:
+                    active_task_id = task.get("task_id")
+                    active_task_title = task.get("title")
+        except Exception:
+            pass
+        
+        fv["active_task_id"] = active_task_id
+        fv["active_task_title"] = active_task_title
+
         # ── Score anomaly ─────────────────────────────────────────────
         risk_score = 0.0
         if self._engine.is_loaded:
@@ -214,12 +237,14 @@ class ActivityLogger:
             arr = np.array([float(fv.get(f, 0.0)) for f in numeric_fields], dtype=np.float32)
             risk_score = self._engine.score(arr)
 
-        # ── Productivity score ────────────────────────────────────────
         productivity_score = _risk_to_productivity(
             risk_score,
             fv.get("idle_ratio", 0.0),
             fv.get("typing_speed_wpm", 0.0),
         )
+        # Extra penalty for unproductive apps
+        if fv.get("top_app", "").lower() in _UNPRODUCTIVE_APPS:
+            productivity_score = max(0.0, productivity_score - 40.0)
 
         # ── Determine contributing factors and label ───────────────────
         factors = _get_contributing_factors(fv, risk_score)
@@ -248,6 +273,9 @@ class ActivityLogger:
             "location_mode": fv.get("location_mode", "unknown"),
             "in_break": in_break,
             "break_type": break_type,
+            "active_task_id": active_task_id,
+            "active_task_title": active_task_title,
+            "top_app": fv.get("top_app"),
             "encrypted": enc is not None,
         }
 
