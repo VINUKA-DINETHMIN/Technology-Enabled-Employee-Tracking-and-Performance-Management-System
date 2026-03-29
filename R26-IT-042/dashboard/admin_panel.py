@@ -737,58 +737,65 @@ class AdminPanel(ctk.CTk):
         
         return frame
 
-    def _refresh_live_grid(self):
+    def _refresh_live_grid(self) -> None:
+        threading.Thread(target=self._fetch_live_grid, daemon=True).start()
+
+    def _fetch_live_grid(self) -> None:
         if not self._db or not self._db.is_connected: return
-        
-        col = self._db.get_collection("screen_streams")
-        if col is None: return
-        
-        # Get all streaming sessions
-        streams = list(col.find({"status": "streaming"}))
-        
-        # Current IDs in grid
-        current_ids = set(self._grid_items.keys())
-        streaming_ids = {s["user_id"] for s in streams}
-        
-        # Remove ended streams
-        for uid in current_ids - streaming_ids:
-            self._grid_items[uid]["frame"].destroy()
-            del self._grid_items[uid]
+        try:
+            import base64, io
+            from PIL import Image
+            col = self._db.get_collection("screen_streams")
+            if col is None: return
+            streams = list(col.find({"status": "streaming"}))
             
-        # Add/Update streams
-        import base64, io
-        from PIL import Image
+            # Process images in background thread
+            processed = []
+            for s in streams:
+                uid = s["user_id"]
+                img = None
+                b64 = s.get("image_base64")
+                if b64:
+                    try:
+                        img_bytes = base64.b64decode(b64)
+                        img = Image.open(io.BytesIO(img_bytes))
+                    except Exception: pass
+                processed.append({"user_id": uid, "image": img, "timestamp": s.get("timestamp", "?")})
+            
+            self.after(0, lambda: self._update_live_grid_ui(processed))
+        except Exception: pass
+
+    def _update_live_grid_ui(self, processed: list) -> None:
+        current_ids = set(self._grid_items.keys())
+        active_ids = {p["user_id"] for p in processed}
         
-        for i, s in enumerate(streams):
-            uid = s["user_id"]
+        # Remove dead
+        for uid in current_ids - active_ids:
+            if uid in self._grid_items:
+                self._grid_items[uid]["frame"].destroy()
+                del self._grid_items[uid]
+                
+        # Update/Add
+        for i, p in enumerate(processed):
+            uid = p["user_id"]
             if uid not in self._grid_items:
-                # Add new tile
                 tile = ctk.CTkFrame(self._grid_scroll, fg_color=C_CARD, corner_radius=12, width=380, height=240)
                 tile.grid(row=len(self._grid_items)//3, column=len(self._grid_items)%3, padx=10, pady=10)
                 tile.grid_propagate(False)
-                
-                name_lbl = ctk.CTkLabel(tile, text=f"Employee: {uid}", font=ctk.CTkFont(size=12, weight="bold"))
-                name_lbl.pack(pady=(10, 5))
-                
-                screen_lbl = ctk.CTkLabel(tile, text="Loading Screen...", font=ctk.CTkFont(size=10), text_color=C_MUTED)
-                screen_lbl.pack(expand=True, fill="both", padx=10)
-                
-                status_lbl = ctk.CTkLabel(tile, text="Live • Capturing", font=ctk.CTkFont(size=9), text_color=C_GREEN)
-                status_lbl.pack(pady=(0, 10))
-                
-                self._grid_items[uid] = {"frame": tile, "label": screen_lbl, "status": status_lbl}
-            
-            # Update image
-            b64 = s.get("image_base64")
-            if b64:
-                try:
-                    img_bytes = base64.b64decode(b64)
-                    img = Image.open(io.BytesIO(img_bytes))
-                    photo = ctk.CTkImage(light_image=img, dark_image=img, size=(340, 180))
-                    self._grid_items[uid]["label"].configure(image=photo, text="")
-                    self._grid_items[uid]["label"]._image = photo
-                    self._grid_items[uid]["status"].configure(text=f"Live • Last sync: {s.get('timestamp','?')[-8:]}")
-                except Exception: pass
+                n_lbl = ctk.CTkLabel(tile, text=f"Employee: {uid}", font=ctk.CTkFont(size=12, weight="bold"))
+                n_lbl.pack(pady=(10, 5))
+                s_lbl = ctk.CTkLabel(tile, text="Loading...", font=ctk.CTkFont(size=10), text_color=C_MUTED)
+                s_lbl.pack(expand=True, fill="both", padx=10)
+                st_lbl = ctk.CTkLabel(tile, text="Live • Capturing", font=ctk.CTkFont(size=9), text_color=C_GREEN)
+                st_lbl.pack(pady=(0, 10))
+                self._grid_items[uid] = {"frame": tile, "label": s_lbl, "status": st_lbl}
+
+            if p["image"]:
+                img = p["image"]
+                photo = ctk.CTkImage(light_image=img, dark_image=img, size=(340, 180))
+                self._grid_items[uid]["label"].configure(image=photo, text="")
+                self._grid_items[uid]["label"]._image = photo
+                self._grid_items[uid]["status"].configure(text=f"Live • Last sync: {p['timestamp'][-8:]}")
 
     def _switch_tab(self, tab_id: str) -> None:
         self._active_tab = tab_id
@@ -851,16 +858,16 @@ class AdminPanel(ctk.CTk):
 
             # Count active sessions
             online_cnt = sessions_col.count_documents({"status": "active"}) if sessions_col is not None else 0
-            self._card_online.set_value(str(online_cnt))
+            self.after(0, lambda v=online_cnt: self._card_online.set_value(str(v)))
 
             # Alerts today
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             alerts_today = alerts_col.count_documents({"timestamp": {"$gte": today_start.isoformat()}}) if alerts_col is not None else 0
-            self._card_alerts.set_value(str(alerts_today))
+            self.after(0, lambda v=alerts_today: self._card_alerts.set_value(str(v)))
 
             # High risk
             high_risk = activity_col.count_documents({"composite_risk_score": {"$gte": 75}}) if activity_col is not None else 0
-            self._card_highrisk.set_value(str(high_risk))
+            self.after(0, lambda v=high_risk: self._card_highrisk.set_value(str(v)))
 
             # Avg productivity (last hour)
             pipeline = [{"$group": {"_id": None, "avg": {"$avg": "$productivity_score"}}}]
@@ -1215,30 +1222,38 @@ class AdminPanel(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
-    def _refresh_task_list(self) -> None:
-        for w in self._task_list_frame.winfo_children():
-            w.destroy()
+    def _fetch_tasks(self) -> None:
         if not self._db or not self._db.is_connected:
             return
         try:
             col = self._db.get_collection("tasks")
-            if col is None:
-                return
+            if col is None: return
             tasks = list(col.find({}, {"_id": 0}).sort("assigned_at", -1).limit(40))
-            for t in tasks:
-                status = t.get("status", "pending")
-                s_color = {"pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN}.get(status, C_MUTED)
-                p_color = {"low": C_BLUE, "medium": C_AMBER, "high": C_RED}.get(t.get("priority", ""), C_MUTED)
-                row = ctk.CTkFrame(self._task_list_frame, fg_color=C_CARD, corner_radius=10, height=44)
-                row.pack(fill="x", pady=3)
-                row.pack_propagate(False)
-                ctk.CTkLabel(row, text=t.get("title", "?"), text_color=C_TEXT, font=ctk.CTkFont(size=12), anchor="w").pack(side="left", padx=12)
-                ctk.CTkLabel(row, text=t.get("employee_id", "?"), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
-                ctk.CTkLabel(row, text=t.get("priority", "").title(), text_color=p_color, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
-                ctk.CTkLabel(row, text=status.replace("_", " ").title(), text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
-                ctk.CTkLabel(row, text=t.get("due_date", ""), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
+            self.after(0, lambda: self._update_task_ui(tasks))
         except Exception as exc:
-            ctk.CTkLabel(self._task_list_frame, text=str(exc), text_color=C_RED).pack()
+            self.after(0, lambda: self._update_task_ui([], error=str(exc)))
+
+    def _update_task_ui(self, tasks: list, error: str = "") -> None:
+        for w in self._task_list_frame.winfo_children():
+            w.destroy()
+        if error:
+            ctk.CTkLabel(self._task_list_frame, text=error, text_color=C_RED).pack()
+            return
+        for t in tasks:
+            status = t.get("status", "pending")
+            s_color = {"pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN}.get(status, C_MUTED)
+            p_color = {"low": C_BLUE, "medium": C_AMBER, "high": C_RED}.get(t.get("priority", ""), C_MUTED)
+            row = ctk.CTkFrame(self._task_list_frame, fg_color=C_CARD, corner_radius=10, height=44)
+            row.pack(fill="x", pady=3)
+            row.pack_propagate(False)
+            ctk.CTkLabel(row, text=t.get("title", "?"), text_color=C_TEXT, font=ctk.CTkFont(size=12), anchor="w").pack(side="left", padx=12)
+            ctk.CTkLabel(row, text=t.get("employee_id", "?"), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
+            ctk.CTkLabel(row, text=t.get("priority", "").title(), text_color=p_color, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
+            ctk.CTkLabel(row, text=status.replace("_", " ").title(), text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+            ctk.CTkLabel(row, text=t.get("due_date", ""), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
+
+    def _refresh_task_list(self) -> None:
+        threading.Thread(target=self._fetch_tasks, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Attendance Tab
@@ -1266,7 +1281,7 @@ class AdminPanel(ctk.CTk):
         # Table header
         hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
         hdr.pack(fill="x", padx=20, pady=(0, 2))
-        for col in ["Name", "ID", "Date", "Sign-in", "Sign-out", "Duration", "Status"]:
+        for col in ["Name", "ID", "Date", "Sign-in", "Sign-out", "Location", "Status"]:
             ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(side="left", padx=12, pady=8, expand=True)
 
         self._att_list_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
@@ -1274,51 +1289,51 @@ class AdminPanel(ctk.CTk):
         return frame
 
     def _refresh_attendance(self) -> None:
-        for w in self._att_list_frame.winfo_children():
-            w.destroy()
+        if _HAS_CALENDAR:
+            date_str = self._att_date.get_date().isoformat()
+        else:
+            date_str = self._att_date_var.get()
+        emp_filter = self._att_emp_var.get().strip()
+        threading.Thread(target=self._fetch_attendance, args=(date_str, emp_filter), daemon=True).start()
+
+    def _fetch_attendance(self, date_str: str, emp_filter: str) -> None:
         if not self._db or not self._db.is_connected:
             return
         try:
             col = self._db.get_collection("attendance_logs")
-            if col is None:
-                return
+            if col is None: return
             query = {}
-            if _HAS_CALENDAR:
-                date_str = self._att_date.get_date().isoformat()
-            else:
-                date_str = self._att_date_var.get()
-            if date_str:
-                query["date"] = date_str
-            emp_filter = self._att_emp_var.get().strip()
-            if emp_filter and emp_filter != "All Employees":
-                query["employee_id"] = emp_filter
-
+            if date_str: query["date"] = date_str
+            if emp_filter and emp_filter != "All Employees": query["employee_id"] = emp_filter
             docs = list(col.find(query, {"_id": 0}).limit(50))
             active_sessions = set()
             try:
                 scol = self._db.get_collection("sessions")
-                if scol:
-                    active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
+                if scol: active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
             except Exception: pass
-
-            for d in docs:
-                eid = d.get("employee_id")
-                status = d.get("status", "—")
-                if eid in active_sessions:
-                    status = "Online"
-                elif status in ["On Time", "Late", "Overtime"]:
-                    status = "Offline"
-                
-                s_color = {"Online": C_GREEN, "On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(status, C_MUTED)
-                row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
-                row.pack(fill="x", pady=2)
-                row.pack_propagate(False)
-                row_vals = [d.get("full_name","?"), eid, d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]
-                for val in row_vals:
-                    ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=12, expand=True)
-                ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+            self.after(0, lambda: self._update_attendance_ui(docs, active_sessions))
         except Exception as exc:
-            ctk.CTkLabel(self._att_list_frame, text=str(exc), text_color=C_RED).pack()
+            self.after(0, lambda: self._update_attendance_ui([], set(), error=str(exc)))
+
+    def _update_attendance_ui(self, docs: list, active_sessions: set, error: str = "") -> None:
+        for w in self._att_list_frame.winfo_children():
+            w.destroy()
+        if error:
+            ctk.CTkLabel(self._att_list_frame, text=error, text_color=C_RED).pack()
+            return
+        for d in docs:
+            eid = d.get("employee_id")
+            status = d.get("status", "—")
+            if eid in active_sessions: status = "Online"
+            elif status in ["On Time", "Late", "Overtime"]: status = "Offline"
+            s_color = {"Online": C_GREEN, "On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(status, C_MUTED)
+            row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
+            row.pack(fill="x", pady=2)
+            row.pack_propagate(False)
+            row_vals = [d.get("full_name","?"), eid, d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]
+            for val in row_vals:
+                ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=12, expand=True)
+            ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
 
     # ------------------------------------------------------------------
     # Settings Tab

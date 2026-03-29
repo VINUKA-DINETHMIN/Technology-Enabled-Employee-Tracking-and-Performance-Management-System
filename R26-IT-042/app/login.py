@@ -456,6 +456,7 @@ class LoginWindow(ctk.CTk):
             import cv2
             from C2_facial_liveness.src.liveness_detector import LivenessDetector
             from PIL import Image, ImageTk
+            import base64
 
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
@@ -466,10 +467,34 @@ class LoginWindow(ctk.CTk):
             detector = LivenessDetector()
             detector.initialize()
 
-            stored_embedding = self._current_employee.get("face_embedding", [])
+            # 1. Prepare Identity Recognizer (LBPH)
+            # We train it with the specific images for this employee
+            face_images_b64 = self._current_employee.get("face_images", [])
+            recognizer = None
+            if face_images_b64:
+                try:
+                    recognizer = cv2.face.LBPHFaceRecognizer_create()
+                    train_imgs = []
+                    labels = []
+                    for b64 in face_images_b64:
+                        buf = base64.b64decode(b64)
+                        nparr = np.frombuffer(buf, np.uint8)
+                        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+                        if img is not None:
+                            train_imgs.append(img)
+                            labels.append(0) # single person
+                    if train_imgs:
+                        recognizer.train(train_imgs, np.array(labels))
+                    else:
+                        recognizer = None
+                except Exception as e:
+                    logger.error("Failed to train LBPH: %s", e)
+                    recognizer = None
+
+            # 2. Loop
             verified_count = 0
             start_ts = time.time()
-            max_duration = 40.0
+            max_duration = 30.0 # 30 seconds to verify
 
             while self._face_running and (time.time() - start_ts) < max_duration:
                 ret, frame = cap.read()
@@ -480,66 +505,76 @@ class LoginWindow(ctk.CTk):
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 detector.process_frame(frame_rgb)
 
-                # Draw face detection overlay
+                # Detection
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                cascade = cv2.CascadeClassifier(
-                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                )
+                cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
                 faces = cascade.detectMultiScale(gray, 1.1, 5)
+                
                 display = frame_rgb.copy()
                 for (x, y, w_, h_) in faces:
                     cv2.rectangle(display, (x, y), (x + w_, y + h_), (20, 184, 166), 2)
 
-                # Render to canvas
+                # Render
                 try:
-                    img = Image.fromarray(display).resize((360, 270))
-                    photo = ImageTk.PhotoImage(img)
+                    img_p = Image.fromarray(display).resize((360, 270))
+                    photo = ImageTk.PhotoImage(img_p)
                     self._cam_canvas.after(0, lambda p=photo: self._draw_cam(p))
-                except Exception:
-                    pass
+                except Exception: pass
 
-                # Face similarity check
-                if len(faces) > 0 and stored_embedding:
-                    # Sort to find largest face
+                # Biometric Check
+                if len(faces) > 0:
                     (fx, fy, fw, fh) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
                     face_roi = gray[fy:fy+fh, fx:fx+fw]
-                    
-                    # Normalize contrast for matching
                     face_roi = cv2.equalizeHist(face_roi)
                     
-                    current_emb = self._compute_embedding(face_roi)
-                    sim = self._cosine_similarity(current_emb, stored_embedding)
-                    if sim >= _FACE_THRESHOLD:
+                    is_match = False
+                    if recognizer is not None:
+                        # Real LBPH Match
+                        face_roi_resized = cv2.resize(face_roi, (200, 200))
+                        label, confidence = recognizer.predict(face_roi_resized)
+                        # LBPH confidence is distance (lower is better). Threshold ~60-80
+                        if label == 0 and confidence < 75:
+                            is_match = True
+                    else:
+                        # Fallback: Historgram similarity for legacy users without samples
+                        stored_emb = self._current_employee.get("face_embedding", [])
+                        if stored_emb:
+                            current_emb = self._compute_embedding(face_roi)
+                            sim = self._cosine_similarity(current_emb, stored_emb)
+                            if sim >= _FACE_THRESHOLD:
+                                is_match = True
+                        else:
+                            # NO identity data stored! (Shouldn't happen with new system)
+                            # Fallback to liveness only (dangerous, but allows login for broken accounts)
+                            is_match = True
+
+                    if is_match:
                         verified_count += 1
                     else:
                         verified_count = max(verified_count - 1, 0)
 
                 liveness = detector.get_result()
-
-                # Check pass conditions
-                if verified_count >= 7 and liveness.passed:
+                if verified_count >= 8 and liveness.passed:
                     cap.release()
                     detector.close()
                     self.after(0, lambda s=liveness.liveness_score: self._on_face_success(s))
                     return
 
-                # Status updates
+                # Status strings
                 if len(faces) == 0:
-                    self.after(0, lambda: self._face_status_var.set("Look at the camera…"))
+                    msg = "Position your face in the box"
                 elif not liveness.passed:
-                    blinks = liveness.blink_count
-                    self.after(0, lambda b=blinks: self._face_status_var.set(
-                        f"Checking identity… Please blink naturally. (blinks: {b})"
-                    ))
-                elif verified_count < 7:
-                    self.after(0, lambda: self._face_status_var.set("Checking identity…"))
+                    msg = f"Liveness check... (Blinks: {liveness.blink_count})"
+                elif verified_count < 8:
+                    msg = "Verifying identity..."
+                else:
+                    msg = "Keep still..."
+                self.after(0, lambda m=msg: self._face_status_var.set(m))
 
                 time.sleep(1 / 20)
 
             cap.release()
             detector.close()
-
-            # Timed out or failed
             self.after(0, self._on_face_fail)
 
         except Exception as exc:
