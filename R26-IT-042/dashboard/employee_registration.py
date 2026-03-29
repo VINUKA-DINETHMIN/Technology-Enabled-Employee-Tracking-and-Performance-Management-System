@@ -278,25 +278,20 @@ class FaceCaptureWindow(ctk.CTkToplevel):
 
     def _do_register(self) -> None:
         try:
-            # 1. Convert frames to base64 and extract face embeddings
-            from PIL import Image
             import cv2
             import numpy as np
+            import base64
             
             face_b64s = []
-            valid_embeddings = []
+            
+            # Using 200x200 for LBPH training
+            FACE_SIZE = (200, 200)
 
             # Initialize face detection for cropping
             cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
             for frame in self._captured_frames:
-                # Save full frame for visual reference (base64)
-                img = Image.fromarray(frame)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                face_b64s.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
-
-                # Extract embedding only for the FACE region
+                # Extract image for the FACE region
                 gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
                 faces = cascade.detectMultiScale(gray, 1.1, 5)
                 
@@ -305,22 +300,17 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                     (x, y, w, h) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
                     face_roi = gray[y:y+h, x:x+w]
                     
-                    # Normalize lighting/contrast
+                    # Normalize lighting/contrast and resize
                     face_roi = cv2.equalizeHist(face_roi)
+                    face_roi = cv2.resize(face_roi, FACE_SIZE)
                     
-                    # Compute histogram for just the face
-                    hist = cv2.calcHist([face_roi], [0], None, [128], [0, 256])
-                    valid_embeddings.append([float(v[0]) for v in hist])
-
-            # 2. Average the embeddings across all samples for stability
-            avg_emb = []
-            if valid_embeddings:
-                # Transpose and average each bin
-                num_bins = len(valid_embeddings[0])
-                for bin_idx in range(num_bins):
-                    avg_val = sum(emb[bin_idx] for emb in valid_embeddings) / len(valid_embeddings)
-                    avg_emb.append(avg_val)
+                    # Convert to base64 for storage
+                    _, buf = cv2.imencode(".jpg", face_roi, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    face_b64s.append(base64.b64encode(buf).decode("utf-8"))
             
+            # Avg embedding placeholder
+            avg_emb = []
+
             # 3. Hash password
             import bcrypt
             pw = self._form.get("password", "password123").encode()

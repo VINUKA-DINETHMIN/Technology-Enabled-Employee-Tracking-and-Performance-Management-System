@@ -252,6 +252,7 @@ class Application:
             if col is not None:
                 today = datetime.now().strftime("%Y-%m-%d")
                 existing = col.find_one({"employee_id": self._user_id, "date": today})
+                
                 if not existing:
                     col.insert_one({
                         "employee_id": self._user_id,
@@ -260,8 +261,15 @@ class Application:
                         "signin": datetime.now().strftime("%H:%M:%S"),
                         "signout": None,
                         "duration": None,
+                        "location": getattr(self, "_current_city", "Unknown"),
                         "status": "On Time",
                     })
+                else:
+                    # Relog on the same day — clear signout/duration so they show as online
+                    col.update_one(
+                        {"_id": existing["_id"]},
+                        {"$set": {"signout": None, "duration": None, "status": "On Time"}}
+                    )
         except Exception as exc:
             log.warning("Attendance signin log error: %s", exc)
 
