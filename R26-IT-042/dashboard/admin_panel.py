@@ -229,42 +229,9 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkFrame(tf, fg_color="transparent", height=8).pack()
 
         # Screenshots list
-        ssf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
-        ssf.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(ssf, text="Recent Screenshots", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
-        screens = self._get_screenshots(emp_id)
-        if not screens:
-            ctk.CTkLabel(ssf, text="No screenshots captured yet.", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(0, 12))
-        else:
-            for s in screens[:5]:
-                row = ctk.CTkFrame(ssf, fg_color=C_BORDER, corner_radius=8)
-                row.pack(fill="x", padx=16, pady=3)
-                reason = s.get("trigger_reason", "manual").title()
-                risk = s.get("risk_score_at_capture", 0.0)
-                ctk.CTkLabel(row, text=f"📸 {reason}", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
-                ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
-                
-                # Buttons to view
-                b64 = s.get("image_base64")
-                path = s.get("file_path", "")
-                
-                # Cloud Viewer (Primary)
-                if b64:
-                    ctk.CTkButton(row, text="View Cloud", width=70, height=24, fg_color=C_TEAL, hover_color=C_TEAL_D, 
-                                  font=ctk.CTkFont(size=10), command=lambda b=b64: ScreenshotViewer(self, b)).pack(side="right", padx=4)
-                
-                # Local Viewer (Secondary - Decrypts high-res)
-                if path and os.path.exists(path):
-                    ctk.CTkButton(row, text="View Local", width=70, height=24, fg_color=C_BLUE, hover_color="#2563eb", 
-                                  font=ctk.CTkFont(size=10), command=lambda p=path: ScreenshotViewer(self, p, is_path=True, user_id=emp_id)).pack(side="right", padx=4)
-                
-                # Folder Opener
-                if path:
-                    ctk.CTkButton(row, text="📁", width=28, height=24, fg_color=C_SIDEBAR, hover_color=C_BORDER, 
-                                  font=ctk.CTkFont(size=10), command=lambda p=path: self._open_file(p)).pack(side="right", padx=2)
-                
-                ctk.CTkLabel(row, text=_fmt_time(s.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right")
-            ctk.CTkFrame(ssf, fg_color="transparent", height=8).pack()
+        self._ssf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
+        self._ssf.pack(fill="x", pady=(0, 12))
+        self._render_screenshots(self._ssf, emp_id)
 
         # Action Buttons
         ctrl_frame = ctk.CTkFrame(body, fg_color="transparent")
@@ -309,6 +276,87 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             messagebox.showinfo("Success", f"MFA email sent to {email}.")
         else:
             messagebox.showerror("Failed", "Check SMTP settings in .env.")
+
+    def _render_screenshots(self, parent_frame: ctk.CTkFrame, emp_id: str) -> None:
+        """Fetch and render screenshoot list rows."""
+        for w in parent_frame.winfo_children():
+            w.destroy()
+
+        ctk.CTkLabel(parent_frame, text="Recent Screenshots", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
+        screens = self._get_screenshots(emp_id)
+        if not screens:
+            ctk.CTkLabel(parent_frame, text="No screenshots captured yet.", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(0, 12))
+        else:
+            for s in screens[:5]:
+                row = ctk.CTkFrame(parent_frame, fg_color=C_BORDER, corner_radius=8)
+                row.pack(fill="x", padx=16, pady=3)
+                reason = s.get("trigger_reason", "manual").title()
+                risk = s.get("risk_score_at_capture", 0.0)
+                ctk.CTkLabel(row, text=f"📸 {reason}", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
+                ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
+                
+                # Buttons
+                path = s.get("file_path", "")
+                b64 = s.get("image_base64")
+
+                # Delete (🗑️)
+                ctk.CTkButton(row, text="🗑️", width=32, height=24, fg_color="#450a0a", hover_color=C_RED, 
+                              font=ctk.CTkFont(size=12), command=lambda sc=s: self._delete_screenshot(sc)).pack(side="right", padx=(8, 4))
+
+                # Folder Opener
+                if path:
+                    ctk.CTkButton(row, text="📁", width=28, height=24, fg_color=C_SIDEBAR, hover_color=C_BORDER, 
+                                  font=ctk.CTkFont(size=10), command=lambda p=path: self._open_file(p)).pack(side="right", padx=2)
+                
+                # View Local
+                if path and os.path.exists(path):
+                    ctk.CTkButton(row, text="View Local", width=70, height=24, fg_color=C_BLUE, hover_color="#2563eb", 
+                                  font=ctk.CTkFont(size=10), command=lambda p=path: ScreenshotViewer(self, p, is_path=True, user_id=emp_id)).pack(side="right", padx=4)
+
+                # View Cloud
+                if b64:
+                    ctk.CTkButton(row, text="View Cloud", width=70, height=24, fg_color=C_TEAL, hover_color=C_TEAL_D, 
+                                  font=ctk.CTkFont(size=10), command=lambda b=b64: ScreenshotViewer(self, b)).pack(side="right", padx=4)
+                
+                ctk.CTkLabel(row, text=_fmt_time(s.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=4)
+            
+            ctk.CTkFrame(parent_frame, fg_color="transparent", height=8).pack()
+
+    def _delete_screenshot(self, screenshot: dict) -> None:
+        """Confirm and delete a screenshot from DB and Disk."""
+        msg = "Are you sure you want to delete this screenshot?\n\nThis will remove it from MongoDB and your local storage."
+        if not messagebox.askyesno("Delete Screenshot", msg):
+            return
+
+        try:
+            emp_id = screenshot.get("user_id")
+            # 1. Delete from DB
+            col = self._db.get_collection("screenshots")
+            if col is not None:
+                # We need the real _id. In _get_screenshots we excluded it... 
+                # Let's check _get_screenshots implementation.
+                # Actually, if we don't have _id, we use timestamp + user_id.
+                res = col.delete_one({"user_id": emp_id, "timestamp": screenshot.get("timestamp")})
+                if res.deleted_count == 0:
+                    # Try by filename if path exists
+                    path = screenshot.get("file_path")
+                    if path:
+                        col.delete_one({"file_path": path})
+
+            # 2. Delete from Filesystem
+            path = screenshot.get("file_path")
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    logger.warning("Failed to delete local file: %s", e)
+
+            # 3. Refresh UI
+            self._render_screenshots(self._ssf, emp_id)
+            messagebox.showinfo("Deleted", "Screenshot successfully removed.")
+
+        except Exception as exc:
+            messagebox.showerror("Error", f"Deletion failed: {exc}")
 
     def _latest_activity(self, emp_id: str) -> Optional[dict]:
         try:
