@@ -634,11 +634,15 @@ class LoginWindow(ctk.CTk):
         try:
             # Geo context
             location_mode = "unknown"
+            geo_city = "Unknown"
+            geo_country = "Unknown"
             wifi_ssid_hash = ""
             device_fingerprint = ""
             try:
                 from C3_activity_monitoring.src.geo_context import get_geo_context
                 geo = get_geo_context()
+                geo_city = geo.get("city") or "Unknown"
+                geo_country = geo.get("country") or "Unknown"
                 location_mode = "office" if geo.get("city") else "unknown"
             except Exception:
                 pass

@@ -871,13 +871,23 @@ class AdminPanel(ctk.CTk):
             # Employee rows
             # Employee rows (exclude heavy fields but keep enough for details)
             employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}).limit(50)) if emps_col is not None else []
-            self._update_employee_list(employees, activity_col, sessions_col)
+            
+            # Pre-fetch all active sessions for fast lookup
+            active_sessions = {}
+            if sessions_col is not None:
+                # Get all active sessions at once to avoid separate queries per row
+                for sess in sessions_col.find({"status": "active"}):
+                    eid = sess.get("employee_id")
+                    if eid:
+                        active_sessions[eid] = sess
+
+            self._update_employee_list(employees, activity_col, active_sessions)
 
         except Exception as exc:
             import logging
             logging.getLogger(__name__).error("Dashboard refresh error: %s", exc)
 
-    def _update_employee_list(self, employees: list, activity_col, sessions_col) -> None:
+    def _update_employee_list(self, employees: list, activity_col, active_sessions: dict) -> None:
         if not hasattr(self, "_emp_rows"):
             self._emp_rows = {} # {emp_id: {"frame": frame, "labels": {name: label}}}
 
@@ -907,15 +917,26 @@ class AdminPanel(ctk.CTk):
             risk = act.get("composite_risk_score", 0.0) if act else 0.0
             risk_color = _risk_color(risk)
             status = "Break" if (act and act.get("in_break")) else ("Idle" if risk == 0 else "Active")
-            loc = (act.get("location_mode") or "—").title() if act else "—"
+            
+            # Use activity log location or fallback to session metadata (city)
+            sess = active_sessions.get(eid)
+            is_online = (sess is not None)
+            
+            loc = "—"
+            if act and act.get("location_mode"):
+                loc = act.get("location_mode").title()
+            elif sess:
+                # If no activity log yet, pull from session
+                city = sess.get("city")
+                loc = city if (city and city != "Unknown") else (sess.get("location_mode") or "—").title()
+            
             last_seen = _fmt_time(act.get("timestamp", "")) if act else "—"
             name = emp.get("full_name", eid)
 
-            # Check online status
             is_online = False
             try:
                 if sessions_col:
-                    sess = sessions_col.find_one({"user_id": eid, "status": "active"})
+                    sess = sessions_col.find_one({"employee_id": eid, "status": "active"})
                     if sess: is_online = True
             except Exception: pass
 
