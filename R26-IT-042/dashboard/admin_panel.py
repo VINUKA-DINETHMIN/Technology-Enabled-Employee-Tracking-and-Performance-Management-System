@@ -173,7 +173,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             status_frame = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
             status_frame.pack(fill="x", pady=(0, 12))
             
-            top_app = risk_doc.get("top_app", "None")
+            top_app = risk_doc.get("top_app") or "None"
             is_unproductive = top_app.lower() in ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
             app_color = C_RED if is_unproductive else C_GREEN
             
@@ -331,12 +331,26 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         except Exception as exc: messagebox.showerror("Error", str(exc))
 
     def _force_screenshot(self, emp_id: str) -> None:
+        """
+        Send a remote command to the employee's app to trigger a screenshot.
+        """
         try:
-            from C3_activity_monitoring.src.screenshot_trigger import ScreenshotTrigger
-            st = ScreenshotTrigger(db_client=self._db)
-            st.capture(user_id=emp_id, session_id="admin_forced", risk_score=0.0, trigger_reason="manual_force")
-            messagebox.showinfo("Screenshot", f"Screenshot captured for {emp_id}.")
-        except Exception as exc: messagebox.showerror("Error", f"Screenshot failed: {exc}")
+            col = self._db.get_collection("commands")
+            if col is not None:
+                cmd = {
+                    "command_id": str(uuid.uuid4()),
+                    "target_user_id": emp_id,
+                    "command_type": "force_screenshot",
+                    "status": "pending",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "expires_at": (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+                }
+                col.insert_one(cmd)
+                messagebox.showinfo("Command Sent", f"Force Screenshot command queued for {emp_id}.\nIt will be captured on their next heartbeat.")
+            else:
+                messagebox.showerror("Error", "Command collection unavailable.")
+        except Exception as exc: 
+            messagebox.showerror("Error", f"Failed to send command: {exc}")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -592,13 +606,13 @@ class AdminPanel(ctk.CTk):
             # Employee rows
             # Employee rows (exclude heavy fields but keep enough for details)
             employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}).limit(50)) if emps_col is not None else []
-            self._update_employee_list(employees, activity_col)
+            self._update_employee_list(employees, activity_col, sessions_col)
 
         except Exception as exc:
             import logging
             logging.getLogger(__name__).error("Dashboard refresh error: %s", exc)
 
-    def _update_employee_list(self, employees: list, activity_col) -> None:
+    def _update_employee_list(self, employees: list, activity_col, sessions_col) -> None:
         if not hasattr(self, "_emp_rows"):
             self._emp_rows = {} # {emp_id: {"frame": frame, "labels": {name: label}}}
 
@@ -632,13 +646,30 @@ class AdminPanel(ctk.CTk):
             last_seen = _fmt_time(act.get("timestamp", "")) if act else "—"
             name = emp.get("full_name", eid)
 
+            # Check online status
+            is_online = False
+            try:
+                if sessions_col:
+                    sess = sessions_col.find_one({"user_id": eid, "status": "active"})
+                    if sess: is_online = True
+            except Exception: pass
+
+            status_text = status
+            status_color = C_TEXT
+            if is_online:
+                status_text = f"⬤ {status}"
+                status_color = C_GREEN
+            elif status == "Break":
+                status_text = f"○ {status}"
+                status_color = C_AMBER
+
             if eid in self._emp_rows:
                 # Update
                 labels = self._emp_rows[eid]["labels"]
                 labels["name"].configure(text=name)
                 labels["risk"].configure(text=f"{risk:.0f}", text_color=risk_color)
                 labels["loc"].configure(text=loc)
-                labels["status"].configure(text=status)
+                labels["status"].configure(text=status_text, text_color=status_color)
                 labels["seen"].configure(text=last_seen)
             else:
                 # Create
@@ -654,7 +685,7 @@ class AdminPanel(ctk.CTk):
                 l_risk.pack(side="left")
                 l_loc = ctk.CTkLabel(row, text=loc, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
                 l_loc.pack(side="left")
-                l_status = ctk.CTkLabel(row, text=status, text_color=C_TEXT, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_status = ctk.CTkLabel(row, text=status_text, text_color=status_color, font=ctk.CTkFont(size=11), width=90, anchor="w")
                 l_status.pack(side="left")
                 l_seen = ctk.CTkLabel(row, text=last_seen, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
                 l_seen.pack(side="left")
@@ -902,7 +933,7 @@ class AdminPanel(ctk.CTk):
             return
         try:
             col = self._db.get_collection("tasks")
-            if not col:
+            if col is None:
                 return
             tasks = list(col.find({}, {"_id": 0}).sort("assigned_at", -1).limit(40))
             for t in tasks:
@@ -960,7 +991,7 @@ class AdminPanel(ctk.CTk):
             return
         try:
             col = self._db.get_collection("attendance_logs")
-            if not col:
+            if col is None:
                 return
             query = {}
             if _HAS_CALENDAR:

@@ -270,6 +270,8 @@ class Application:
         self._start_thread("C1-UserInteraction", self._start_c1)
         # C4: Productivity prediction
         self._start_thread("C4-ProductivityPrediction", self._start_c4)
+        # REMOTE COMMANDS: Admin-to-Employee instructions
+        self._start_thread("COMMANDS", self._start_command_poller)
 
     def _start_thread(self, name: str, target) -> None:
         t = threading.Thread(target=target, name=name, daemon=True)
@@ -319,6 +321,47 @@ class Application:
             log.warning("C4 not available — skipping.")
         except Exception as exc:
             log.error("C4 crashed: %s", exc)
+
+    def _start_command_poller(self) -> None:
+        """
+        Background thread that listens for instructions from the admin panel
+        (e.g., force screenshot, lock workstation, display message).
+        """
+        try:
+            from common.commands import CommandPoller
+            from C3_activity_monitoring.src.screenshot_trigger import ScreenshotTrigger
+            from common.encryption import AESEncryptor
+
+            poller = CommandPoller(
+                user_id=self._user_id,
+                db_client=self._db_client,
+                shutdown_event=self._shutdown_event,
+                interval_sec=10
+            )
+
+            # --- Handler: Remote Screenshot ---
+            def handle_screenshot(cmd: dict):
+                log.info("Executing remote command: force_screenshot")
+                try:
+                    enc = AESEncryptor()
+                    st = ScreenshotTrigger(db_client=self._db_client, encryptor=enc)
+                    st.capture(
+                        user_id=self._user_id,
+                        session_id=self._session_id or "admin_remote",
+                        risk_score=cmd.get("risk_score", 0.0),
+                        trigger_reason="admin_remote_force"
+                    )
+                except Exception as e:
+                    log.error("Remote screenshot execution failed: %s", e)
+                    raise
+
+            poller.register_handler("force_screenshot", handle_screenshot)
+            
+            # Start polling
+            poller.start()
+
+        except Exception as exc:
+            log.error("Command poller initialization failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Admin panel mode
