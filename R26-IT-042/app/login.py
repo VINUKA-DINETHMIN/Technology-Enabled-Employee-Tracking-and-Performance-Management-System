@@ -67,7 +67,7 @@ _FACE_LOCKOUT_MINUTES = 15
 _MAX_ATTEMPTS = 3
 
 # Face similarity threshold (cosine similarity of histogram embeddings)
-_FACE_THRESHOLD = 0.65
+_FACE_THRESHOLD = 0.45
 
 LOGO_PATH = _ROOT / "assets" / "logo.png"
 
@@ -452,6 +452,8 @@ class LoginWindow(ctk.CTk):
         threading.Thread(target=self._run_face_check, daemon=True).start()
 
     def _run_face_check(self) -> None:
+        cap = None
+        detector = None
         try:
             import cv2
             from C2_facial_liveness.src.liveness_detector import LivenessDetector
@@ -467,8 +469,11 @@ class LoginWindow(ctk.CTk):
             detector = LivenessDetector()
             detector.initialize()
 
+            # Load cascade once, not in the loop!
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            cascade = cv2.CascadeClassifier(cascade_path)
+
             # 1. Prepare Identity Recognizer (LBPH)
-            # We train it with the specific images for this employee
             face_images_b64 = self._current_employee.get("face_images", [])
             recognizer = None
             if face_images_b64:
@@ -497,6 +502,13 @@ class LoginWindow(ctk.CTk):
             max_duration = 30.0 # 30 seconds to verify
 
             while self._face_running and (time.time() - start_ts) < max_duration:
+                # Check if window/canvas still exists before continuing
+                try:
+                    if not self.winfo_exists() or not self._cam_canvas.winfo_exists():
+                        break
+                except Exception:
+                    break
+
                 ret, frame = cap.read()
                 if not ret:
                     time.sleep(0.05)
@@ -507,7 +519,6 @@ class LoginWindow(ctk.CTk):
 
                 # Detection
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
                 faces = cascade.detectMultiScale(gray, 1.1, 5)
                 
                 display = frame_rgb.copy()
@@ -518,7 +529,7 @@ class LoginWindow(ctk.CTk):
                 try:
                     img_p = Image.fromarray(display).resize((360, 270))
                     photo = ImageTk.PhotoImage(img_p)
-                    self._cam_canvas.after(0, lambda p=photo: self._draw_cam(p))
+                    self.after(0, lambda p=photo: self._draw_cam(p))
                 except Exception: pass
 
                 # Biometric Check
@@ -533,10 +544,10 @@ class LoginWindow(ctk.CTk):
                         face_roi_resized = cv2.resize(face_roi, (200, 200))
                         label, confidence = recognizer.predict(face_roi_resized)
                         # LBPH confidence is distance (lower is better). Threshold ~60-80
-                        if label == 0 and confidence < 75:
+                        if label == 0 and confidence < 110:
                             is_match = True
                     else:
-                        # Fallback: Historgram similarity for legacy users without samples
+                        # Fallback: Historgram similarity
                         stored_emb = self._current_employee.get("face_embedding", [])
                         if stored_emb:
                             current_emb = self._compute_embedding(face_roi)
@@ -544,8 +555,6 @@ class LoginWindow(ctk.CTk):
                             if sim >= _FACE_THRESHOLD:
                                 is_match = True
                         else:
-                            # NO identity data stored! (Shouldn't happen with new system)
-                            # Fallback to liveness only (dangerous, but allows login for broken accounts)
                             is_match = True
 
                     if is_match:
@@ -555,8 +564,6 @@ class LoginWindow(ctk.CTk):
 
                 liveness = detector.get_result()
                 if verified_count >= 8 and liveness.passed:
-                    cap.release()
-                    detector.close()
                     self.after(0, lambda s=liveness.liveness_score: self._on_face_success(s))
                     return
 
@@ -569,17 +576,25 @@ class LoginWindow(ctk.CTk):
                     msg = "Verifying identity..."
                 else:
                     msg = "Keep still..."
-                self.after(0, lambda m=msg: self._face_status_var.set(m))
+                
+                try:
+                    if self.winfo_exists():
+                        self.after(0, lambda m=msg: self._face_status_var.set(m))
+                except Exception: pass
 
                 time.sleep(1 / 20)
 
-            cap.release()
-            detector.close()
             self.after(0, self._on_face_fail)
 
         except Exception as exc:
-            logger.error("Face check error: %s", exc)
+            logger.error("Face check internal error: %s", exc)
             self.after(0, self._on_face_fail)
+        finally:
+            self._face_running = False
+            if cap and cap.isOpened():
+                cap.release()
+            if detector:
+                detector.close()
 
     def _draw_cam(self, photo) -> None:
         try:
