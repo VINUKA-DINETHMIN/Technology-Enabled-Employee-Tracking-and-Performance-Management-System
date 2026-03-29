@@ -264,6 +264,34 @@ class Application:
         except Exception as exc:
             log.warning("Attendance signin log error: %s", exc)
 
+    def _log_attendance_signout(self) -> None:
+        try:
+            from datetime import datetime
+            col = self._db_client.get_collection("attendance_logs")
+            if col is not None:
+                today = datetime.now().strftime("%Y-%m-%d")
+                now_str = datetime.now().strftime("%H:%M:%S")
+                
+                # Update today's record
+                doc = col.find_one({"employee_id": self._user_id, "date": today})
+                if doc and doc.get("signin"):
+                    # Calculate duration
+                    s_t = datetime.strptime(doc["signin"], "%H:%M:%S")
+                    e_t = datetime.strptime(now_str, "%H:%M:%S")
+                    diff = e_t - s_t
+                    duration = str(diff).split(".")[0] # HH:MM:SS
+                    
+                    col.update_one(
+                        {"employee_id": self._user_id, "date": today},
+                        {"$set": {
+                            "signout": now_str,
+                            "duration": duration,
+                            "status": "Offline"
+                        }}
+                    )
+        except Exception as exc:
+            log.warning("Attendance signout log error: %s", exc)
+
     # ------------------------------------------------------------------
     # Monitoring (C1, C3, C4)
     # ------------------------------------------------------------------
@@ -281,6 +309,7 @@ class Application:
     def _restart_at_login(self) -> None:
         """Called on logout to return to the login screen."""
         log.info("Restarting at login...")
+        self._log_attendance_signout()
         self._shutdown_monitoring()
         if self._root:
             self._root.destroy()

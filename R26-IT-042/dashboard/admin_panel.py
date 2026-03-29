@@ -768,6 +768,9 @@ class AdminPanel(ctk.CTk):
             elif status == "Break":
                 status_text = f"○ {status}"
                 status_color = C_AMBER
+            else:
+                status_text = f"✖ Offline"
+                status_color = C_RED
 
             if eid in self._emp_rows:
                 # Update
@@ -1112,7 +1115,7 @@ class AdminPanel(ctk.CTk):
 
             docs = list(col.find(query, {"_id": 0}).limit(50))
             for d in docs:
-                status_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE}.get(d.get("status", ""), C_MUTED)
+                status_color = {"On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(d.get("status", ""), C_MUTED)
                 row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
                 row.pack(fill="x", pady=2)
                 row.pack_propagate(False)
