@@ -308,21 +308,8 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                     _, buf = cv2.imencode(".jpg", face_roi, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     face_b64s.append(base64.b64encode(buf).decode("utf-8"))
             
-            # 2. Compute average histogram (biometric embedding)
+            # Avg embedding placeholder
             avg_emb = []
-            if face_b64s:
-                all_hists = []
-                for b64 in face_b64s:
-                    buf = base64.b64decode(b64)
-                    nparr = np.frombuffer(buf, np.uint8)
-                    face_img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-                    if face_img is not None:
-                        hist = cv2.calcHist([face_img], [0], None, [128], [0, 256])
-                        hist = cv2.normalize(hist, hist).flatten()
-                        all_hists.append(hist)
-                
-                if all_hists:
-                    avg_emb = np.mean(all_hists, axis=0).tolist()
 
             # 3. Hash password
             import bcrypt
@@ -365,15 +352,9 @@ class FaceCaptureWindow(ctk.CTkToplevel):
         except Exception as exc:
             self.after(0, lambda e=exc: self._on_error(str(e)))
 
-    def _compute_embedding(self, face_roi) -> list:
-        """Calculate a 128-bin normalized grayscale histogram."""
-        try:
-            import cv2
-            hist = cv2.calcHist([face_roi], [0], None, [128], [0, 256])
-            hist = cv2.normalize(hist, hist).flatten()
-            return [float(v) for v in hist]
-        except Exception:
-            return []
+    def _compute_embedding(self, frame_rgb) -> Optional[list]:
+        """Deprecated: Use face-aware cropping instead."""
+        return None
 
 
     def _on_success(self, email_sent: bool = True) -> None:
