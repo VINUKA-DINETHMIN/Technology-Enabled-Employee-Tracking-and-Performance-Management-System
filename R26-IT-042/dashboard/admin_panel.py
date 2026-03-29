@@ -1060,9 +1060,156 @@ class AdminPanel(ctk.CTk):
             command=self._open_registration,
         ).pack(side="right")
 
+        # Column headers
+        hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
+        hdr.pack(fill="x", padx=20, pady=(0, 4))
+        for col, w in [("Employee ID", 120), ("Name", 200), ("Email", 250), ("Actions", 150)]:
+            ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, width=w, anchor="w").pack(side="left", padx=8)
+
         self._all_emp_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._all_emp_frame.pack(fill="both", expand=True, padx=20, pady=(4, 16))
         return frame
+
+    def _refresh_employees(self) -> None:
+        if not self._db or not self._db.is_connected: return
+        try:
+            col = self._db.get_collection("employees")
+            if col is None: return
+            emps = list(col.find({}, {"_id": 0}))
+            self.after(0, lambda: self._update_employees_ui(emps))
+        except Exception:
+            pass
+
+    def _update_employees_ui(self, employees: list) -> None:
+        for w in self._all_emp_frame.winfo_children():
+            w.destroy()
+        if not employees:
+            ctk.CTkLabel(self._all_emp_frame, text="No employees found.", text_color=C_MUTED).pack(pady=20)
+            return
+            
+        for emp in employees:
+            eid = emp.get("employee_id", "Unknown")
+            name = emp.get("full_name", "Unknown")
+            email = emp.get("email", "—")
+            
+            row = ctk.CTkFrame(self._all_emp_frame, fg_color=C_CARD, corner_radius=8, height=44)
+            row.pack(fill="x", pady=3)
+            row.pack_propagate(False)
+            
+            l_id = ctk.CTkLabel(row, text=eid, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=120, anchor="w")
+            l_id.pack(side="left", padx=(8, 0))
+            l_name = ctk.CTkLabel(row, text=name, text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold"), width=200, anchor="w")
+            l_name.pack(side="left", padx=8)
+            l_email = ctk.CTkLabel(row, text=email, text_color=C_TEXT, font=ctk.CTkFont(size=11), width=250, anchor="w")
+            l_email.pack(side="left", padx=8)
+            
+            # Actions
+            btn_frame = ctk.CTkFrame(row, fg_color="transparent")
+            btn_frame.pack(side="right", padx=8)
+            
+            ctk.CTkButton(
+                btn_frame, text="✏️ Edit", width=60, height=28, fg_color=C_BLUE, hover_color="#2563eb",
+                font=ctk.CTkFont(size=11), command=lambda e=emp: self._edit_employee(e)
+            ).pack(side="left", padx=4)
+            
+            ctk.CTkButton(
+                btn_frame, text="❌ Delete", width=70, height=28, fg_color="#450a0a", hover_color=C_RED,
+                font=ctk.CTkFont(size=11), command=lambda e=emp: self._delete_employee(e)
+            ).pack(side="left", padx=4)
+
+    def _edit_employee(self, emp: dict) -> None:
+        eid = emp.get("employee_id")
+        win = ctk.CTkToplevel(self)
+        win.title(f"Edit Employee - {eid}")
+        win.geometry("440x550")
+        win.attributes("-topmost", True)
+        win.configure(fg_color=C_BG)
+        
+        ctk.CTkLabel(win, text="Edit Information", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(pady=(20, 10))
+        
+        form = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=20, pady=10)
+
+        def create_entry(label_text, default_val):
+            f = ctk.CTkFrame(form, fg_color="transparent")
+            f.pack(fill="x", pady=5)
+            ctk.CTkLabel(f, text=label_text, width=120, anchor="w").pack(side="left")
+            e = ctk.CTkEntry(f, width=220)
+            e.pack(side="right")
+            e.insert(0, default_val)
+            return e
+
+        def create_dropdown(label_text, default_val, options):
+            f = ctk.CTkFrame(form, fg_color="transparent")
+            f.pack(fill="x", pady=5)
+            ctk.CTkLabel(f, text=label_text, width=120, anchor="w").pack(side="left")
+            var = ctk.StringVar(value=default_val if default_val in options else options[0])
+            om = ctk.CTkOptionMenu(f, variable=var, values=options, width=220, fg_color=C_BORDER, button_color=C_BORDER)
+            om.pack(side="right")
+            return var
+
+        e_name = create_entry("Full Name", emp.get("full_name", ""))
+        e_email = create_entry("Email", emp.get("email", ""))
+        
+        DEPARTMENTS = ["IT", "HR", "Finance", "Operations", "Management"]
+        ROLES       = ["Employee", "Senior Employee", "Team Lead"]
+        LOCATIONS   = ["Office", "Home", "Hybrid"]
+        
+        v_dept = create_dropdown("Department", emp.get("department", "IT"), DEPARTMENTS)
+        v_role = create_dropdown("Role", emp.get("role", "Employee"), ROLES)
+        e_shift_start = create_entry("Shift Start", emp.get("shift_start", "09:00"))
+        e_shift_end = create_entry("Shift End", emp.get("shift_end", "18:00"))
+        v_loc = create_dropdown("Work Location", emp.get("work_location", "Office"), LOCATIONS)
+
+        def save():
+            if not self._db or not self._db.is_connected: return
+            new_name = e_name.get().strip()
+            new_email = e_email.get().strip()
+            if not new_name: return messagebox.showerror("Error", "Name required", parent=win)
+            
+            update_data = {
+                "full_name": new_name,
+                "email": new_email,
+                "department": v_dept.get(),
+                "role": v_role.get(),
+                "shift_start": e_shift_start.get().strip(),
+                "shift_end": e_shift_end.get().strip(),
+                "work_location": v_loc.get()
+            }
+            try:
+                col = self._db.get_collection("employees")
+                col.update_one({"employee_id": eid}, {"$set": update_data})
+                messagebox.showinfo("Success", "Employee updated.", parent=win)
+                win.destroy()
+                self._refresh_employees()
+            except Exception as exc:
+                messagebox.showerror("Error", str(exc), parent=win)
+                
+        ctk.CTkButton(win, text="Save Changes", fg_color=C_TEAL, hover_color=C_TEAL_D, command=save).pack(pady=(10, 20))
+
+    def _delete_employee(self, emp: dict) -> None:
+        eid = emp.get("employee_id")
+        msg = f"Are you sure you want to permanently delete {eid} ({emp.get('full_name')})?\n\nThis action cannot be undone."
+        if not messagebox.askyesno("Delete Employee", msg):
+            return
+            
+        try:
+            if not self._db or not self._db.is_connected: return
+            
+            # 1. Delete Employee
+            e_col = self._db.get_collection("employees")
+            e_col.delete_one({"employee_id": eid})
+            
+            # 2. Invalidate sessions
+            s_col = self._db.get_collection("sessions")
+            s_col.update_many({"employee_id": eid}, {"$set": {"status": "terminated"}})
+            
+            messagebox.showinfo("Deleted", f"Employee {eid} has been removed.")
+            self._refresh_employees()
+            
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not delete: {exc}")
+
 
     def _open_registration(self) -> None:
         try:
@@ -1300,8 +1447,102 @@ class AdminPanel(ctk.CTk):
             ctk.CTkLabel(row, text=status.replace("_", " ").title(), text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
             ctk.CTkLabel(row, text=t.get("due_date", ""), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
 
+            # --- Action Buttons ---
+            btn_frame = ctk.CTkFrame(row, fg_color="transparent")
+            btn_frame.pack(side="right", padx=8)
+
+            ctk.CTkButton(btn_frame, text="✏️ Edit", width=60, height=28, fg_color=C_BLUE, hover_color="#2563eb",
+                          font=ctk.CTkFont(size=11), command=lambda task_obj=t: self._edit_task(task_obj)).pack(side="left", padx=4)
+            ctk.CTkButton(btn_frame, text="❌ Delete", width=70, height=28, fg_color="#450a0a", hover_color=C_RED,
+                          font=ctk.CTkFont(size=11), command=lambda task_obj=t: self._delete_task(task_obj)).pack(side="left", padx=4)
+
     def _refresh_task_list(self) -> None:
         threading.Thread(target=self._fetch_tasks, daemon=True).start()
+
+    def _delete_task(self, task: dict) -> None:
+        """Confirm and delete a task from MongoDB."""
+        tid = task.get("task_id")
+        title = task.get("title", "Untitled")
+        if not messagebox.askyesno("Delete Task", f"Are you sure you want to delete the task '{title}'?"):
+            return
+
+        try:
+            col = self._db.get_collection("tasks")
+            if col is not None:
+                col.delete_one({"task_id": tid})
+                messagebox.showinfo("Success", "Task deleted successfully.")
+                self._refresh_task_list()
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not delete task: {exc}")
+
+    def _edit_task(self, task: dict) -> None:
+        """Open a popup to edit task title, description, and status."""
+        tid = task.get("task_id")
+        win = ctk.CTkToplevel(self)
+        win.title(f"Edit Task - {tid[:8]}")
+        win.geometry("450x450")
+        win.attributes("-topmost", True)
+        win.configure(fg_color=C_BG)
+
+        ctk.CTkLabel(win, text="Edit Task Information", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(pady=(20, 10))
+
+        form = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Title
+        ctk.CTkLabel(form, text="Title", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        e_title = ctk.CTkEntry(form, height=36, fg_color="#0f1117", border_color=C_BORDER)
+        e_title.pack(fill="x")
+        e_title.insert(0, task.get("title", ""))
+
+        # Description
+        ctk.CTkLabel(form, text="Description", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        t_desc = ctk.CTkTextbox(form, height=80, fg_color="#0f1117", border_color=C_BORDER)
+        t_desc.pack(fill="x")
+        t_desc.insert("1.0", task.get("description", ""))
+
+        # Status
+        ctk.CTkLabel(form, text="Status", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        v_status = ctk.StringVar(value=task.get("status", "pending"))
+        ctk.CTkOptionMenu(form, variable=v_status, values=["pending", "in_progress", "completed"], 
+                          fg_color=C_BORDER, button_color=C_BORDER).pack(fill="x")
+
+        # Priority
+        ctk.CTkLabel(form, text="Priority", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        v_priority = ctk.StringVar(value=task.get("priority", "medium"))
+        ctk.CTkOptionMenu(form, variable=v_priority, values=["low", "medium", "high"], 
+                          fg_color=C_BORDER, button_color=C_BORDER).pack(fill="x")
+
+        def save_changes():
+            if not self._db or not self._db.is_connected: return
+            new_title = e_title.get().strip()
+            new_desc = t_desc.get("1.0", "end").strip()
+            if not new_title:
+                messagebox.showerror("Error", "Title cannot be empty.", parent=win)
+                return
+
+            update_data = {
+                "title": new_title,
+                "description": new_desc,
+                "status": v_status.get(),
+                "priority": v_priority.get()
+            }
+            # Special case for completion timestamp
+            if v_status.get() == "completed" and task.get("status") != "completed":
+                update_data["completed_at"] = datetime.utcnow().isoformat()
+            
+            try:
+                col = self._db.get_collection("tasks")
+                if col is not None:
+                    col.update_one({"task_id": tid}, {"$set": update_data})
+                    messagebox.showinfo("Success", "Task updated.", parent=win)
+                    win.destroy()
+                    self._refresh_task_list()
+            except Exception as exc:
+                messagebox.showerror("Error", str(exc), parent=win)
+
+        ctk.CTkButton(win, text="Save Changes", fg_color=C_TEAL, hover_color=C_TEAL_D, height=40,
+                      command=save_changes).pack(pady=(10, 20), padx=20, fill="x")
 
     # ------------------------------------------------------------------
     # Attendance Tab
@@ -1415,6 +1656,8 @@ class AdminPanel(ctk.CTk):
             threading.Thread(target=self._refresh_attendance, daemon=True).start()
         elif self._active_tab == "live_grid":
             threading.Thread(target=self._refresh_live_grid, daemon=True).start()
+        elif self._active_tab == "employees":
+            threading.Thread(target=self._refresh_employees, daemon=True).start()
         self.after(POLL_INTERVAL_MS, self._do_poll)
 
     # ------------------------------------------------------------------
