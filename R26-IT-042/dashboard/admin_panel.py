@@ -989,7 +989,10 @@ class AdminPanel(ctk.CTk):
 
             risk = act.get("composite_risk_score", 0.0) if act else 0.0
             risk_color = _risk_color(risk)
-            status = "Break" if (act and act.get("in_break")) else ("Idle" if risk == 0 else "Active")
+            idle_ratio = float(act.get("idle_ratio", 0.0)) if act else 0.0
+            factors = act.get("contributing_factors", []) if act else []
+            is_idle = idle_ratio >= 0.5 or ("high_idle_ratio" in factors)
+            status = "Break" if (act and act.get("in_break")) else ("Idle" if is_idle else "Active")
             
             # Use activity log location or fallback to session metadata (city)
             sess = active_sessions.get(eid)
@@ -1006,18 +1009,16 @@ class AdminPanel(ctk.CTk):
             last_seen = _fmt_time(act.get("timestamp", "")) if act else "—"
             name = emp.get("full_name", eid)
 
-            is_online = False
-            try:
-                if sessions_col:
-                    sess = sessions_col.find_one({"employee_id": eid, "status": "active"})
-                    if sess: is_online = True
-            except Exception: pass
-
             status_text = status
             status_color = C_TEXT
             if is_online:
                 status_text = f"⬤ {status}"
-                status_color = C_GREEN
+                if status == "Idle":
+                    status_color = C_AMBER
+                elif status == "Break":
+                    status_color = C_AMBER
+                else:
+                    status_color = C_GREEN
             elif status == "Break":
                 status_text = f"○ {status}"
                 status_color = C_AMBER
