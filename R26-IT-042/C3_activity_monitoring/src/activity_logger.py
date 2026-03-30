@@ -241,7 +241,8 @@ class ActivityLogger:
                 "typing_speed_wpm", "error_rate", "mean_velocity", "std_velocity",
                 "mean_acceleration", "mean_curvature", "click_frequency",
                 "idle_ratio", "app_switch_frequency", "active_app_entropy",
-                "total_focus_duration",
+                "total_focus_duration", "session_duration_min", "geolocation_deviation",
+                "wifi_ssid_match", "device_fingerprint_match", "face_liveness_score",
             ]
             arr = np.array([float(fv.get(f, 0.0)) for f in numeric_fields], dtype=np.float32)
             risk_score = self._engine.score(arr)

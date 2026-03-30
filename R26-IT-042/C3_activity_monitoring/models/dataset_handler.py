@@ -7,8 +7,9 @@ training the IsolationForest anomaly model.
 
 Expected CSV columns (from employee_monitoring_dataset.csv)
 ────────────────────────────────────────────────────────────
-  user_id, session_id, keystrokes_per_min, wpm, mouse_velocity,
-  click_rate, scroll_rate, idle_ratio, app_switches, label (optional)
+    All C3 feature columns plus label, including:
+    mean_dwell_time, typing_speed_wpm, idle_ratio, app_switch_frequency,
+    active_app_entropy, total_focus_duration, face_liveness_score, label
 """
 
 from __future__ import annotations
@@ -25,13 +26,25 @@ logger = logging.getLogger(__name__)
 _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "employee_monitoring_dataset.csv"
 
 FEATURE_COLUMNS = [
-    "keystrokes_per_min",
-    "wpm",
-    "mouse_velocity",
-    "click_rate",
-    "scroll_rate",
+    "mean_dwell_time",
+    "std_dwell_time",
+    "mean_flight_time",
+    "typing_speed_wpm",
+    "error_rate",
+    "mean_velocity",
+    "std_velocity",
+    "mean_acceleration",
+    "mean_curvature",
+    "click_frequency",
     "idle_ratio",
-    "app_switches",
+    "app_switch_frequency",
+    "active_app_entropy",
+    "total_focus_duration",
+    "session_duration_min",
+    "geolocation_deviation",
+    "wifi_ssid_match",
+    "device_fingerprint_match",
+    "face_liveness_score",
 ]
 
 
