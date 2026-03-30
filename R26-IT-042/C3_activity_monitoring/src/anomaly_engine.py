@@ -14,7 +14,6 @@ Model file locations
 from __future__ import annotations
 
 import logging
-import os
 import pickle
 from pathlib import Path
 from typing import Optional
@@ -26,6 +25,29 @@ logger = logging.getLogger(__name__)
 _MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 _MODEL_PATH = _MODELS_DIR / "user_behavioral_model.pkl"
 _SCALER_PATH = _MODELS_DIR / "feature_scaler.pkl"
+
+# Canonical model feature order used during training and runtime inference.
+FEATURE_COLUMNS = [
+    "mean_dwell_time",
+    "std_dwell_time",
+    "mean_flight_time",
+    "typing_speed_wpm",
+    "error_rate",
+    "mean_velocity",
+    "std_velocity",
+    "mean_acceleration",
+    "mean_curvature",
+    "click_frequency",
+    "idle_ratio",
+    "app_switch_frequency",
+    "active_app_entropy",
+    "total_focus_duration",
+    "session_duration_min",
+    "geolocation_deviation",
+    "wifi_ssid_match",
+    "device_fingerprint_match",
+    "face_liveness_score",
+]
 
 
 class AnomalyEngine:
@@ -43,6 +65,32 @@ class AnomalyEngine:
         self._model = None
         self._scaler = None
         self._model_loaded = False
+
+    def _align_feature_length(self, x: np.ndarray, expected: int) -> np.ndarray:
+        """Adapt feature vector length to what the loaded scaler/model expects."""
+        current = int(x.shape[1])
+        if current == expected:
+            return x
+
+        # Backward compatibility path: previous runtime sent 14 features.
+        # Map to 19 by appending session/context defaults.
+        if current == 14 and expected == 19:
+            pad = np.array([[0.0, 0.0, 1.0, 1.0, 0.0]], dtype=np.float32)
+            logger.warning(
+                "AnomalyEngine received legacy 14-feature input; auto-expanding to 19 features."
+            )
+            return np.hstack([x.astype(np.float32), pad])
+
+        # Generic fallback: truncate or zero-pad to avoid hard failure.
+        logger.warning(
+            "AnomalyEngine feature length mismatch (got=%d, expected=%d). Applying fallback alignment.",
+            current,
+            expected,
+        )
+        if current > expected:
+            return x[:, :expected]
+        pad = np.zeros((x.shape[0], expected - current), dtype=np.float32)
+        return np.hstack([x.astype(np.float32), pad])
 
     def load_model(self) -> bool:
         """
@@ -98,6 +146,15 @@ class AnomalyEngine:
 
         try:
             x = features.reshape(1, -1)
+
+            expected_features = None
+            if self._scaler is not None:
+                expected_features = getattr(self._scaler, "n_features_in_", None)
+            if expected_features is None:
+                expected_features = getattr(self._model, "n_features_in_", None)
+            if expected_features is not None:
+                x = self._align_feature_length(x, int(expected_features))
+
             if self._scaler is not None:
                 x = self._scaler.transform(x)
 
