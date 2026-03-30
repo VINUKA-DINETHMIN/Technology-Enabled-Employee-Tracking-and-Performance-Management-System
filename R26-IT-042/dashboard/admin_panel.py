@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import re
 import asyncio
 import threading
 import time
@@ -1703,6 +1704,61 @@ class AdminPanel(ctk.CTk):
     # Attendance Tab
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _seconds_from_hms(value: Optional[str]) -> int:
+        """Convert HH:MM:SS to seconds; return 0 when value is missing/invalid."""
+        if not value:
+            return 0
+        try:
+            parts = [int(p) for p in str(value).split(":")]
+            if len(parts) != 3:
+                return 0
+            h, m, s = parts
+            return max(0, (h * 3600) + (m * 60) + s)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _fmt_hms(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _derive_attendance_status(self, signin: Optional[str], signout: Optional[str], existing_status: Optional[str]) -> str:
+        """Return one of: On Time / Late / Early Departure / Overtime."""
+        base_status = str(existing_status or "").strip()
+        if base_status in {"On Time", "Late", "Early Departure", "Overtime"}:
+            return base_status
+
+        sign_in_cutoff = datetime.strptime("09:15:00", "%H:%M:%S").time()
+        early_departure_cutoff = datetime.strptime("17:00:00", "%H:%M:%S").time()
+        overtime_cutoff = datetime.strptime("18:00:00", "%H:%M:%S").time()
+
+        sign_in_time = None
+        sign_out_time = None
+        try:
+            if signin:
+                sign_in_time = datetime.strptime(signin, "%H:%M:%S").time()
+        except Exception:
+            sign_in_time = None
+        try:
+            if signout:
+                sign_out_time = datetime.strptime(signout, "%H:%M:%S").time()
+        except Exception:
+            sign_out_time = None
+
+        if sign_out_time is not None:
+            if sign_out_time >= overtime_cutoff:
+                return "Overtime"
+            if sign_out_time < early_departure_cutoff:
+                return "Early Departure"
+
+        if sign_in_time is not None and sign_in_time > sign_in_cutoff:
+            return "Late"
+        return "On Time"
+
     def _build_attendance_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self._tab_frame, fg_color=C_BG, corner_radius=0)
 
@@ -1725,7 +1781,7 @@ class AdminPanel(ctk.CTk):
         # Table header
         hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
         hdr.pack(fill="x", padx=20, pady=(0, 2))
-        for col in ["Name", "ID", "Date", "Sign-in", "Sign-out", "Location", "Status"]:
+        for col in ["Name", "ID", "Date", "Sign-in", "Sign-out", "Active Duration", "Idle Duration", "Status"]:
             ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(side="left", padx=12, pady=8, expand=True)
 
         self._att_list_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
@@ -1747,34 +1803,106 @@ class AdminPanel(ctk.CTk):
             col = self._db.get_collection("attendance_logs")
             if col is None: return
             query = {}
-            if date_str: query["date"] = date_str
-            if emp_filter and emp_filter != "All Employees": query["employee_id"] = emp_filter
-            docs = list(col.find(query, {"_id": 0}).limit(50))
+            if date_str:
+                query["date"] = date_str
+            if emp_filter and emp_filter != "All Employees":
+                emp_text = emp_filter.split("—")[0].strip()
+                esc = re.escape(emp_text)
+                query["$or"] = [
+                    {"employee_id": {"$regex": f"^{esc}$", "$options": "i"}},
+                    {"full_name": {"$regex": esc, "$options": "i"}},
+                ]
+
+            docs = list(col.find(query, {"_id": 0}).sort("signin", -1).limit(200))
+
             active_sessions = set()
             try:
                 scol = self._db.get_collection("sessions")
-                if scol: active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
-            except Exception: pass
-            self.after(0, lambda: self._update_attendance_ui(docs, active_sessions))
-        except Exception as exc:
-            self.after(0, lambda: self._update_attendance_ui([], set(), error=str(exc)))
+                if scol is not None:
+                    active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
+            except Exception:
+                pass
 
-    def _update_attendance_ui(self, docs: list, active_sessions: set, error: str = "") -> None:
+            idle_seconds_by_user: dict[str, int] = {}
+            try:
+                activity_col = self._db.get_collection("activity_logs")
+                if activity_col is not None and date_str:
+                    act_query: dict = {
+                        "timestamp": {"$regex": f"^{re.escape(date_str)}"},
+                    }
+                    if emp_filter and emp_filter != "All Employees":
+                        emp_text = emp_filter.split("—")[0].strip()
+                        act_query["user_id"] = {"$regex": f"^{re.escape(emp_text)}$", "$options": "i"}
+
+                    for act in activity_col.find(act_query, {"_id": 0, "user_id": 1, "idle_ratio": 1}):
+                        uid = str(act.get("user_id", "")).strip()
+                        if not uid:
+                            continue
+                        ratio = float(act.get("idle_ratio", 0.0) or 0.0)
+                        ratio = max(0.0, min(1.0, ratio))
+                        idle_seconds_by_user[uid] = idle_seconds_by_user.get(uid, 0) + int(round(ratio * 60.0))
+            except Exception:
+                pass
+
+            self.after(0, lambda: self._update_attendance_ui(docs, active_sessions, idle_seconds_by_user))
+        except Exception as exc:
+            self.after(0, lambda: self._update_attendance_ui([], set(), {}, error=str(exc)))
+
+    def _update_attendance_ui(self, docs: list, active_sessions: set, idle_seconds_by_user: dict[str, int], error: str = "") -> None:
         for w in self._att_list_frame.winfo_children():
             w.destroy()
         if error:
             ctk.CTkLabel(self._att_list_frame, text=error, text_color=C_RED).pack()
             return
+        today_str = datetime.now().strftime("%Y-%m-%d")
         for d in docs:
-            eid = d.get("employee_id")
-            status = d.get("status", "—")
-            if eid in active_sessions: status = "Online"
-            elif status in ["On Time", "Late", "Overtime"]: status = "Offline"
-            s_color = {"Online": C_GREEN, "On Time": C_GREEN, "Late": C_AMBER, "Early Departure": C_RED, "Overtime": C_BLUE, "Offline": C_RED}.get(status, C_MUTED)
+            eid = str(d.get("employee_id", "")).strip()
+            sign_in = d.get("signin") or "—"
+            sign_out = d.get("signout") or "—"
+
+            total_seconds = self._seconds_from_hms(d.get("duration"))
+            if total_seconds <= 0 and sign_in not in (None, "—"):
+                try:
+                    s_dt = datetime.strptime(sign_in, "%H:%M:%S")
+                    if sign_out not in (None, "—"):
+                        e_dt = datetime.strptime(sign_out, "%H:%M:%S")
+                    elif eid in active_sessions and d.get("date") == today_str:
+                        e_dt = datetime.now().replace(microsecond=0)
+                    else:
+                        e_dt = None
+                    if e_dt is not None:
+                        total_seconds = max(0, int((e_dt - s_dt).total_seconds()))
+                except Exception:
+                    total_seconds = 0
+
+            idle_seconds = min(total_seconds, idle_seconds_by_user.get(eid, 0))
+            active_seconds = max(0, total_seconds - idle_seconds)
+
+            status = self._derive_attendance_status(
+                signin=None if sign_in == "—" else sign_in,
+                signout=None if sign_out == "—" else sign_out,
+                existing_status=d.get("status"),
+            )
+
+            s_color = {
+                "On Time": C_GREEN,
+                "Late": C_AMBER,
+                "Early Departure": C_RED,
+                "Overtime": C_BLUE,
+            }.get(status, C_MUTED)
+
             row = ctk.CTkFrame(self._att_list_frame, fg_color=C_CARD, corner_radius=8, height=40)
             row.pack(fill="x", pady=2)
             row.pack_propagate(False)
-            row_vals = [d.get("full_name","?"), eid, d.get("date",""), d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]
+            row_vals = [
+                d.get("full_name", "?"),
+                eid,
+                d.get("date", ""),
+                sign_in,
+                sign_out,
+                self._fmt_hms(active_seconds),
+                self._fmt_hms(idle_seconds),
+            ]
             for val in row_vals:
                 ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=12, expand=True)
             ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
