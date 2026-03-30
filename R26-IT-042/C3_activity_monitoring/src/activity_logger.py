@@ -109,6 +109,15 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
         factors.append("unproductive_app_usage")
     if fv.get("active_task_id") is None and fv.get("typing_speed_wpm", 0.0) > 20:
         factors.append("off_task_activity")
+    
+    # ── Mouse Specific Factors ─────────────────────────────────────────
+    if fv.get("click_frequency", 0.0) > 100.0:
+        factors.append("abnormal_click_frequency")
+    if fv.get("mean_curvature", 0.0) > 0.8:
+        factors.append("erratic_mouse_movement")
+    if fv.get("mean_velocity", 0.0) > 1500.0:
+        factors.append("high_velocity_movement")
+
     if risk_score >= _HARD_WARN:
         factors.append("high_composite_risk")
     return factors
