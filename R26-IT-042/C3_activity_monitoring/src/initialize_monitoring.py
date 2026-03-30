@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,64 @@ def start_monitoring(
     keyboard = KeyboardTracker(window_sec=30.0)
     mouse = MouseTracker(window_sec=30.0)
     app = AppUsageMonitor(window_sec=30.0)
+
+    def _persist_alert(level: str, risk_score: float, factors: list[str], extra: Optional[dict] = None) -> None:
+        """Persist alert documents so Admin Panel alert feed can display them."""
+        if db_client is None or not getattr(db_client, "is_connected", False):
+            return
+        try:
+            alerts_col = db_client.get_collection("alerts")
+            if alerts_col is None:
+                return
+            alerts_col.insert_one(
+                {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "risk_score": float(risk_score),
+                    "level": level,
+                    "factors": factors,
+                    **(extra or {}),
+                }
+            )
+        except Exception as exc:
+            logger.warning("Could not persist alert document: %s", exc)
+
+    def _on_idle_detected(idle_duration_sec: float) -> None:
+        logger.warning("Employee idle for %.0fs", idle_duration_sec)
+        factors = ["idle_timeout", f"idle_{int(idle_duration_sec)}s"]
+
+        # Send via websocket channel (if configured)
+        if alert_sender is not None:
+            try:
+                alert_sender.send_alert(
+                    user_id=user_id,
+                    risk_score=55.0,
+                    factors=factors,
+                    level="MEDIUM",
+                    session_id=session_id,
+                    extra={"reason": "idle_inactivity", "idle_duration_sec": round(idle_duration_sec, 1)},
+                )
+            except Exception as exc:
+                logger.warning("Idle alert websocket send failed: %s", exc)
+
+        # Persist for Admin Panel Alerts tab
+        _persist_alert(
+            level="MEDIUM",
+            risk_score=55.0,
+            factors=factors,
+            extra={"reason": "idle_inactivity", "idle_duration_sec": round(idle_duration_sec, 1)},
+        )
+
+    def _on_idle_resume() -> None:
+        logger.info("Employee resumed activity after idle period.")
+
     idle = IdleDetector(
         threshold_sec=120,
         check_interval=5.0,
         window_sec=60.0,
-        on_idle=lambda dur: logger.warning("Employee idle for %.0fs", dur),
+        on_idle=_on_idle_detected,
+        on_resume=_on_idle_resume,
     )
     offline_queue = OfflineQueue()
     anomaly_engine = AnomalyEngine()
