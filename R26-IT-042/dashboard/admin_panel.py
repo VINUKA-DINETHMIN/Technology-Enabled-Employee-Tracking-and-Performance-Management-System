@@ -180,6 +180,24 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             ctk.CTkLabel(status_frame, text="Current App Focus:", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(12, 0))
             ctk.CTkLabel(status_frame, text=top_app.upper(), font=ctk.CTkFont(size=14, weight="bold"), text_color=app_color).pack(anchor="w", padx=16)
 
+            # --- New Detailed App Metrics ---
+            metrics_row = ctk.CTkFrame(status_frame, fg_color="transparent")
+            metrics_row.pack(fill="x", padx=16, pady=(8, 0))
+            
+            def m_box(parent, label, val, color=C_TEXT):
+                f = ctk.CTkFrame(parent, fg_color=C_BORDER, corner_radius=6)
+                f.pack(side="left", expand=True, fill="both", padx=2)
+                ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=9), text_color=C_MUTED).pack(pady=(4, 0))
+                ctk.CTkLabel(f, text=val, font=ctk.CTkFont(size=11, weight="bold"), text_color=color).pack(pady=(0, 4))
+
+            sw_freq = risk_doc.get("app_switch_frequency", 0.0)
+            entropy = risk_doc.get("active_app_entropy", 0.0)
+            duration = risk_doc.get("total_focus_duration", 0.0)
+
+            m_box(metrics_row, "SWITCH RATE", f"{sw_freq:.1f}/min", C_AMBER if sw_freq > 15 else C_TEXT)
+            m_box(metrics_row, "FOCUS ENTROPY", f"{entropy:.2f}", C_RED if entropy > 2.0 else C_TEXT)
+            m_box(metrics_row, "FOCUS TIME", f"{duration:.0f}s")
+
             active_task = risk_doc.get("active_task_title", "No Active Task")
             ctk.CTkLabel(status_frame, text="Active Working Task:", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(8, 0))
             ctk.CTkLabel(status_frame, text=active_task, font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(0, 12))
