@@ -1263,7 +1263,7 @@ class AdminPanel(ctk.CTk):
             return cached
         try:
             col = self._db.get_collection("employees") if self._db else None
-            doc = col.find_one({"employee_id": emp_id}, {"_id": 0, "full_name": 1}) if col else None
+            doc = col.find_one({"employee_id": emp_id}, {"_id": 0, "full_name": 1}) if col is not None else None
             name = (doc or {}).get("full_name") or emp_id
             self._employee_name_cache[emp_id] = name
             return name
@@ -1436,7 +1436,7 @@ class AdminPanel(ctk.CTk):
         try:
             from bson import ObjectId
             col = self._db.get_collection("alerts")
-            if col and alert_id:
+            if col is not None and alert_id:
                 query = None
                 try:
                     query = {"_id": ObjectId(alert_id)}
@@ -1451,7 +1451,7 @@ class AdminPanel(ctk.CTk):
         emp_id = alert.get("user_id")
         try:
             col = self._db.get_collection("employees")
-            emp = col.find_one({"employee_id": emp_id}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}) if col else None
+            emp = col.find_one({"employee_id": emp_id}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}) if col is not None else None
             if emp:
                 EmployeeDetailWindow(self, emp, self._db)
         except Exception:
