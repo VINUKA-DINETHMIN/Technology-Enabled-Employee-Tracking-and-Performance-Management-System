@@ -18,12 +18,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import asyncio
 import threading
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 # ── Path bootstrap ────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +45,12 @@ except ImportError:
 from common.database import MongoDBClient
 from common.alerts import AlertSender
 from config.settings import settings
+
+try:
+    import websockets
+    _HAS_WEBSOCKETS = True
+except ImportError:
+    _HAS_WEBSOCKETS = False
 
 # ── Appearance ────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -683,6 +691,10 @@ class AdminPanel(ctk.CTk):
         self._alert_sender = AlertSender(ws_url=settings.WEBSOCKET_URL)
         self._active_tab = "dashboard"
         self._employee_rows: dict = {}
+        self._employee_name_cache: dict[str, str] = {}
+        self._critical_sound_seen: set[str] = set()
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_server = None
 
         self.title(f"{settings.APP_NAME} — Admin Panel")
         w, h = 1200, 780
@@ -698,7 +710,9 @@ class AdminPanel(ctk.CTk):
 
         self._build_layout()
         self._switch_tab("dashboard")
+        self._start_alert_ws_server()
         self._start_polling()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
     # Layout construction
@@ -1241,6 +1255,114 @@ class AdminPanel(ctk.CTk):
     # Alerts Tab
     # ------------------------------------------------------------------
 
+    def _employee_name(self, emp_id: str) -> str:
+        if not emp_id:
+            return "Unknown"
+        cached = self._employee_name_cache.get(emp_id)
+        if cached:
+            return cached
+        try:
+            col = self._db.get_collection("employees") if self._db else None
+            doc = col.find_one({"employee_id": emp_id}, {"_id": 0, "full_name": 1}) if col else None
+            name = (doc or {}).get("full_name") or emp_id
+            self._employee_name_cache[emp_id] = name
+            return name
+        except Exception:
+            return emp_id
+
+    def _alert_dedupe_key(self, alert: dict) -> str:
+        factors = ",".join(sorted(alert.get("factors", []) or []))
+        return "|".join(
+            [
+                str(alert.get("user_id", "")),
+                str(alert.get("timestamp", "")),
+                str(alert.get("level", "")).upper(),
+                str(round(float(alert.get("risk_score", 0.0)), 2)),
+                factors,
+            ]
+        )
+
+    def _persist_realtime_alert(self, alert: dict) -> dict:
+        if not self._db or not self._db.is_connected:
+            return alert
+        # Idle timeout alerts are already persisted by initialize_monitoring.
+        if alert.get("reason") == "idle_inactivity":
+            return alert
+        try:
+            col = self._db.get_collection("alerts")
+            if col is None:
+                return alert
+            dedupe_key = self._alert_dedupe_key(alert)
+            existing = col.find_one({"dedupe_key": dedupe_key}, {"_id": 1})
+            if existing:
+                merged = dict(alert)
+                merged["_id"] = existing.get("_id")
+                return merged
+            doc = {
+                "type": "alert",
+                "timestamp": alert.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                "user_id": alert.get("user_id", "?"),
+                "session_id": alert.get("session_id"),
+                "risk_score": float(alert.get("risk_score", 0.0)),
+                "level": str(alert.get("level", "LOW")).upper(),
+                "factors": list(alert.get("factors", [])),
+                "resolved": False,
+                "dedupe_key": dedupe_key,
+            }
+            for k, v in alert.items():
+                if k not in doc:
+                    doc[k] = v
+            result = col.insert_one(doc)
+            doc["_id"] = result.inserted_id
+            return doc
+        except Exception:
+            return alert
+        return alert
+
+    async def _ws_message_handler(self, websocket) -> None:
+        async for raw in websocket:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if payload.get("type") != "alert":
+                continue
+            persisted = self._persist_realtime_alert(payload)
+            self.after(0, lambda p=persisted: self._add_alert_card(p, prepend=True))
+
+    async def _ws_server_task(self, host: str, port: int) -> None:
+        if not _HAS_WEBSOCKETS:
+            return
+        self._ws_server = await websockets.serve(self._ws_message_handler, host, port)
+        await self._ws_server.wait_closed()
+
+    def _start_alert_ws_server(self) -> None:
+        if not _HAS_WEBSOCKETS:
+            return
+        try:
+            parsed = urlparse(settings.WEBSOCKET_URL)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or 8765
+        except Exception:
+            host, port = "localhost", 8765
+
+        def _run_server() -> None:
+            try:
+                loop = asyncio.new_event_loop()
+                self._ws_loop = loop
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self._ws_server_task(host, port))
+            except Exception:
+                pass
+            finally:
+                if self._ws_loop is not None:
+                    try:
+                        self._ws_loop.close()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_run_server, daemon=True, name="AdminAlertWebSocketServer").start()
+
     def _build_alerts_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self._tab_frame, fg_color=C_BG, corner_radius=0)
 
@@ -1262,25 +1384,31 @@ class AdminPanel(ctk.CTk):
             col = self._db.get_collection("alerts")
             if col is None:
                 return
-            alerts = list(col.find({}, {"_id": 0}).sort("timestamp", -1).limit(50))
+            alerts = list(
+                col.find({"resolved": {"$ne": True}})
+                .sort("timestamp", -1)
+                .limit(50)
+            )
             for alert in alerts:
                 self._add_alert_card(alert)
         except Exception as exc:
             ctk.CTkLabel(self._alerts_frame, text=f"Error: {exc}", text_color=C_RED).pack()
 
-    def _add_alert_card(self, alert: dict) -> None:
+    def _add_alert_card(self, alert: dict, prepend: bool = False) -> None:
         level = alert.get("level", "LOW").upper()
         color = _level_color(level)
+        emp_id = str(alert.get("user_id", "?"))
+        emp_name = alert.get("employee_name") or self._employee_name(emp_id)
 
         card = ctk.CTkFrame(self._alerts_frame, fg_color=C_CARD, corner_radius=12)
-        card.pack(fill="x", pady=4)
+        card.pack(fill="x", pady=4, before=self._alerts_frame.winfo_children()[0] if prepend and self._alerts_frame.winfo_children() else None)
 
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=16, pady=(12, 4))
 
         ctk.CTkLabel(top, text=f"  {level}  ", fg_color=color, corner_radius=6,
                      font=ctk.CTkFont(size=11, weight="bold"), text_color="#fff", width=70).pack(side="left")
-        ctk.CTkLabel(top, text=f"  {alert.get('user_id', '?')}", text_color=C_TEXT, font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=8)
+        ctk.CTkLabel(top, text=f"  {emp_name} ({emp_id})", text_color=C_TEXT, font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=8)
         ctk.CTkLabel(top, text=f"Risk: {alert.get('risk_score', 0):.1f}", text_color=_risk_color(alert.get("risk_score", 0)), font=ctk.CTkFont(size=12)).pack(side="left", padx=12)
         ctk.CTkLabel(top, text=_fmt_time(alert.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right")
 
@@ -1294,20 +1422,28 @@ class AdminPanel(ctk.CTk):
         ctk.CTkButton(btn_row, text="Mark Resolved", width=120, height=28, fg_color="#166534",
                       hover_color="#15803d", font=ctk.CTkFont(size=11),
                       command=lambda aid=alert_id: self._mark_resolved(aid, card)).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(btn_row, text="View Employee", width=120, height=28, fg_color=C_BORDER,
+        ctk.CTkButton(btn_row, text="View Details", width=120, height=28, fg_color=C_BORDER,
                       hover_color=C_BLUE, font=ctk.CTkFont(size=11),
                       command=lambda a=alert: self._view_emp_from_alert(a)).pack(side="left")
 
         if level == "CRITICAL":
-            _play_alert_sound()
+            dedupe_key = self._alert_dedupe_key(alert)
+            if dedupe_key not in self._critical_sound_seen:
+                self._critical_sound_seen.add(dedupe_key)
+                _play_alert_sound()
 
     def _mark_resolved(self, alert_id: str, card_widget) -> None:
         try:
             from bson import ObjectId
             col = self._db.get_collection("alerts")
             if col and alert_id:
-                col.update_one({"_id": ObjectId(alert_id)}, {"$set": {"resolved": True, "resolved_at": datetime.utcnow().isoformat()}})
-            card_widget.configure(fg_color="#0d2010")
+                query = None
+                try:
+                    query = {"_id": ObjectId(alert_id)}
+                except Exception:
+                    query = {"_id": alert_id}
+                col.update_one(query, {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc).isoformat()}})
+            card_widget.destroy()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
@@ -1687,6 +1823,14 @@ class AdminPanel(ctk.CTk):
         db = MongoDBClient(uri=settings.MONGO_URI, db_name=settings.MONGO_DB_NAME)
         db.connect()
         return db
+
+    def _on_close(self) -> None:
+        try:
+            if self._ws_server is not None:
+                self._ws_server.close()
+        except Exception:
+            pass
+        self.destroy()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
