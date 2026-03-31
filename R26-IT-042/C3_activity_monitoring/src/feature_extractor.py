@@ -160,6 +160,7 @@ class FeatureExtractor:
             "app_switch_frequency": app_feat["app_switch_frequency"],
             "active_app_entropy": app_feat["active_app_entropy"],
             "total_focus_duration": app_feat["total_focus_duration"],
+            "top_app": app_feat.get("top_app"),  # ← FIX: Add missing app tracking
             # ── Session / temporal context ─────────────────────────
             "session_duration_min": round(session_elapsed_min, 2),
             "hour_of_day": now_utc.hour,
