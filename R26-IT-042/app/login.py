@@ -714,6 +714,21 @@ class LoginWindow(ctk.CTk):
 
             col = self._db.get_collection("sessions")
             if col is not None:
+                # Ensure only one active session per employee.
+                col.update_many(
+                    {
+                        "employee_id": emp_id,
+                        "status": "active",
+                        "session_id": {"$ne": self._session_id},
+                    },
+                    {
+                        "$set": {
+                            "status": "ended",
+                            "logout_at": datetime.now(timezone.utc).isoformat(),
+                            "ended_reason": "superseded_by_new_login",
+                        }
+                    },
+                )
                 col.insert_one(session_doc)
 
             # Log auth event

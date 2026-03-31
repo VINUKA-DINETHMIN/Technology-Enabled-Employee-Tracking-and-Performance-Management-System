@@ -72,6 +72,7 @@ C_MUTED     = "#64748b"
 C_BLUE      = "#3b82f6"
 
 POLL_INTERVAL_MS = 10_000   # 10 seconds
+ONLINE_SESSION_MAX_AGE_HOURS = 16
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Helpers
@@ -1065,8 +1066,15 @@ class AdminPanel(ctk.CTk):
             activity_col = self._db.get_collection("activity_logs")
             emps_col     = self._db.get_collection("employees")
 
-            # Count active sessions
-            online_cnt = sessions_col.count_documents({"status": "active"}) if sessions_col is not None else 0
+            # Employee rows (exclude heavy fields but keep enough for details)
+            employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}).limit(50)) if emps_col is not None else []
+            employee_ids = {e.get("employee_id") for e in employees if e.get("employee_id")}
+
+            # Pre-fetch active sessions by employee (deduped + stale filtered)
+            active_sessions = self._get_active_sessions_by_employee(employee_ids)
+
+            # Count currently online employees (not raw session rows)
+            online_cnt = len(active_sessions)
             self.after(0, lambda v=online_cnt: self._card_online.set_value(str(v)))
 
             # Alerts today
@@ -1083,19 +1091,6 @@ class AdminPanel(ctk.CTk):
             avg_result = list(activity_col.aggregate(pipeline)) if activity_col is not None else []
             avg_prod = avg_result[0]["avg"] if avg_result else 0.0
             self._card_avg_prod.set_value(f"{avg_prod:.0f}%")
-
-            # Employee rows
-            # Employee rows (exclude heavy fields but keep enough for details)
-            employees = list(emps_col.find({}, {"_id": 0, "password_hash": 0, "face_images": 0, "face_embedding": 0}).limit(50)) if emps_col is not None else []
-            
-            # Pre-fetch all active sessions for fast lookup
-            active_sessions = {}
-            if sessions_col is not None:
-                # Get all active sessions at once to avoid separate queries per row
-                for sess in sessions_col.find({"status": "active"}):
-                    eid = sess.get("employee_id")
-                    if eid:
-                        active_sessions[eid] = sess
 
             self._update_employee_list(employees, activity_col, active_sessions)
 
@@ -1126,7 +1121,7 @@ class AdminPanel(ctk.CTk):
             
             act = None
             try:
-                if activity_col:
+                if activity_col is not None:
                     act = activity_col.find_one({"user_id": eid}, sort=[("timestamp", -1)])
             except Exception: pass
 
@@ -1943,13 +1938,7 @@ class AdminPanel(ctk.CTk):
 
             docs = list(col.find(query, {"_id": 0}).sort("signin", -1).limit(200))
 
-            active_sessions = set()
-            try:
-                scol = self._db.get_collection("sessions")
-                if scol is not None:
-                    active_sessions = {s.get("employee_id") for s in scol.find({"status": "active"})}
-            except Exception:
-                pass
+            active_sessions = set(self._get_active_sessions_by_employee().keys())
 
             idle_seconds_by_user: dict[str, int] = {}
             try:
@@ -1975,6 +1964,52 @@ class AdminPanel(ctk.CTk):
             self.after(0, lambda: self._update_attendance_ui(docs, active_sessions, idle_seconds_by_user))
         except Exception as exc:
             self.after(0, lambda: self._update_attendance_ui([], set(), {}, error=str(exc)))
+
+    def _parse_iso_dt(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _get_active_sessions_by_employee(self, allowed_employee_ids: Optional[set[str]] = None) -> dict:
+        """
+        Return active sessions keyed by employee_id, deduped by latest login time,
+        and filtered to recent sessions to avoid stale online state.
+        """
+        active_by_emp: dict[str, dict] = {}
+        if not self._db or not self._db.is_connected:
+            return active_by_emp
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=ONLINE_SESSION_MAX_AGE_HOURS)
+        try:
+            scol = self._db.get_collection("sessions")
+            if scol is None:
+                return active_by_emp
+
+            rows = list(scol.find({"status": "active"}, {"_id": 0}).sort("login_at", -1).limit(5000))
+            for sess in rows:
+                eid = str(sess.get("employee_id") or "").strip()
+                if not eid:
+                    continue
+                if allowed_employee_ids is not None and eid not in allowed_employee_ids:
+                    continue
+                if eid in active_by_emp:
+                    continue
+
+                login_dt = self._parse_iso_dt(sess.get("login_at"))
+                if login_dt is None or login_dt < cutoff:
+                    continue
+
+                active_by_emp[eid] = sess
+        except Exception:
+            return {}
+
+        return active_by_emp
 
     def _update_attendance_ui(self, docs: list, active_sessions: set, idle_seconds_by_user: dict[str, int], error: str = "") -> None:
         for w in self._att_list_frame.winfo_children():
