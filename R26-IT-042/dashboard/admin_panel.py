@@ -242,6 +242,89 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             ctk.CTkLabel(row, text=_fmt_time(a.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
         ctk.CTkFrame(af, fg_color="transparent", height=8).pack()
 
+        # Activity logs (recent windows)
+        activity_logs = self._get_activity_logs(emp_id)
+        lgf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
+        lgf.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(
+            lgf,
+            text=f"Recent Activity Logs ({len(activity_logs)})",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+
+        if not activity_logs:
+            ctk.CTkLabel(
+                lgf,
+                text="No activity logs found for this employee.",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=11),
+            ).pack(anchor="w", padx=16, pady=(0, 10))
+        else:
+            for item in activity_logs[:12]:
+                row = ctk.CTkFrame(lgf, fg_color=C_BORDER, corner_radius=8)
+                row.pack(fill="x", padx=16, pady=3)
+
+                risk = float(item.get("composite_risk_score", 0.0) or 0.0)
+                prod = float(item.get("productivity_score", 0.0) or 0.0)
+                lbl = str(item.get("label", "normal"))
+                top_app = str(item.get("top_app") or "-")
+                idle_ratio = float(item.get("idle_ratio", 0.0) or 0.0)
+
+                ctk.CTkLabel(
+                    row,
+                    text=_fmt_time(item.get("timestamp", "")),
+                    text_color=C_MUTED,
+                    font=ctk.CTkFont(size=11),
+                    width=65,
+                ).pack(side="left", padx=(8, 4), pady=6)
+                ctk.CTkLabel(
+                    row,
+                    text=f"Risk {risk:.1f}",
+                    text_color=_risk_color(risk),
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    width=85,
+                ).pack(side="left", padx=4)
+                ctk.CTkLabel(
+                    row,
+                    text=f"Prod {prod:.0f}%",
+                    text_color=C_TEXT,
+                    font=ctk.CTkFont(size=11),
+                    width=80,
+                ).pack(side="left", padx=4)
+                ctk.CTkLabel(
+                    row,
+                    text=f"Idle {idle_ratio:.2f}",
+                    text_color=C_TEXT,
+                    font=ctk.CTkFont(size=11),
+                    width=75,
+                ).pack(side="left", padx=4)
+                ctk.CTkLabel(
+                    row,
+                    text=f"App {top_app}",
+                    text_color=C_TEXT,
+                    font=ctk.CTkFont(size=11),
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    row,
+                    text=lbl.replace("_", " ").title(),
+                    text_color=C_AMBER if "risk" in lbl else C_GREEN,
+                    font=ctk.CTkFont(size=11),
+                ).pack(side="right", padx=(4, 8))
+
+                ctk.CTkButton(
+                    row,
+                    text="View",
+                    width=52,
+                    height=24,
+                    fg_color=C_SIDEBAR,
+                    hover_color=C_BLUE,
+                    font=ctk.CTkFont(size=10),
+                    command=lambda d=item: self._show_activity_log_detail(d),
+                ).pack(side="right", padx=4)
+
+        ctk.CTkFrame(lgf, fg_color="transparent", height=8).pack()
+
         # Tasks assigned
         tasks = self._get_tasks(emp_id)
         tf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
@@ -416,6 +499,51 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 return list(col.find({"user_id": emp_id}, {"_id": 0}).sort("timestamp", -1).limit(10))
         except Exception: pass
         return []
+
+    def _get_activity_logs(self, emp_id: str) -> list:
+        try:
+            col = self._db.get_collection("activity_logs")
+            if col is not None:
+                projection = {
+                    "_id": 0,
+                    "timestamp": 1,
+                    "composite_risk_score": 1,
+                    "productivity_score": 1,
+                    "idle_ratio": 1,
+                    "top_app": 1,
+                    "label": 1,
+                    "contributing_factors": 1,
+                    "location_mode": 1,
+                    "in_break": 1,
+                    "break_type": 1,
+                    "alert_triggered": 1,
+                }
+                return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(50))
+        except Exception:
+            pass
+        return []
+
+    def _show_activity_log_detail(self, log_doc: dict) -> None:
+        lines = [
+            f"Time: {_fmt_time(log_doc.get('timestamp', ''))}",
+            f"Risk: {float(log_doc.get('composite_risk_score', 0.0) or 0.0):.2f}",
+            f"Productivity: {float(log_doc.get('productivity_score', 0.0) or 0.0):.2f}%",
+            f"Label: {str(log_doc.get('label', 'normal')).replace('_', ' ').title()}",
+            f"Top App: {log_doc.get('top_app', '-')}",
+            f"Idle Ratio: {float(log_doc.get('idle_ratio', 0.0) or 0.0):.3f}",
+            f"Location: {log_doc.get('location_mode', 'unknown')}",
+            f"In Break: {bool(log_doc.get('in_break', False))}",
+            f"Break Type: {log_doc.get('break_type') or '-'}",
+            f"Alert Triggered: {bool(log_doc.get('alert_triggered', False))}",
+        ]
+
+        factors = log_doc.get("contributing_factors", []) or []
+        if factors:
+            lines.append("Contributing Factors: " + ", ".join(str(f) for f in factors))
+        else:
+            lines.append("Contributing Factors: -")
+
+        messagebox.showinfo("Activity Log Detail", "\n".join(lines))
 
     def _open_file(self, path: str) -> None:
         try:
