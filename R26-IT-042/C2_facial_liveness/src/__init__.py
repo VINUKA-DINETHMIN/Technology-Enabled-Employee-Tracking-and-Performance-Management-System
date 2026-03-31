@@ -43,7 +43,7 @@ def run_liveness_check(
     try:
         import cv2
         import numpy as np
-        from C2_facial_liveness.src.liveness_detector import LivenessDetector
+        from C3_activity_monitoring.src.liveness_detector import LivenessDetector
 
         detector = LivenessDetector()
         if not detector.initialize():
@@ -106,7 +106,7 @@ def get_liveness_score(user_id: str = "UNKNOWN", frames_limit: int = 90) -> floa
     """
     try:
         import cv2
-        from C2_facial_liveness.src.liveness_detector import LivenessDetector
+        from C3_activity_monitoring.src.liveness_detector import LivenessDetector
 
         detector = LivenessDetector()
         if not detector.initialize():

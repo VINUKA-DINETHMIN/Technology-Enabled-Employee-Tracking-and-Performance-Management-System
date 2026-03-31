@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
-import time
 from datetime import datetime, time as dtime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import customtkinter as ctk
 
@@ -154,13 +152,27 @@ class BreakManager:
 
     def is_in_break(self) -> bool:
         """Return True if the current time falls within any break window."""
-        return self.get_active_break() is not None
+        with self._lock:
+            if self._monitoring_paused and self._active_break is not None:
+                return True
+        return self._get_scheduled_active_break() is not None
 
     def get_active_break(self) -> Optional[str]:
         """
         Return the name of the active break ("lunch", "short_1", etc.)
         or None if not in a break.
         """
+        with self._lock:
+            if self._monitoring_paused and self._active_break is not None:
+                return self._active_break
+
+        return self._get_scheduled_active_break()
+
+    def _get_scheduled_active_break(self) -> Optional[str]:
+        """Resolve active break from configured daily schedule."""
+        if not self._breaks:
+            self.load_breaks()
+
         now = datetime.now().time()
         for name, cfg in self._breaks.items():
             try:
@@ -191,10 +203,13 @@ class BreakManager:
         duration_sec = int(cfg.get("duration_minutes", 15)) * 60
 
         with self._lock:
+            if self._countdown_timer is not None:
+                self._countdown_timer.cancel()
             self._active_break = break_type
             self._break_start_time = datetime.now()
 
         self.pause_monitoring()
+        self._show_break_started_notice()
         self._show_break_window(break_type, duration_sec)
 
         # Overrun check timer
@@ -255,6 +270,7 @@ class BreakManager:
 
         if self._countdown_timer:
             self._countdown_timer.cancel()
+            self._countdown_timer = None
 
         for tracker in self._trackers:
             try:
@@ -310,8 +326,33 @@ class BreakManager:
             except Exception as exc:
                 logger.error("Alert send error (overrun): %s", exc)
 
+        self._persist_overrun_alert(break_type)
+
         # Log policy violation
         self._log_policy_violation(break_type)
+
+    def _persist_overrun_alert(self, break_type: str) -> None:
+        """Persist break-overrun alert so Admin Alerts tab can always display it."""
+        if self._db is None or not self._db.is_connected:
+            return
+        try:
+            col = self._db.get_collection("alerts")
+            if col is None:
+                return
+            col.insert_one({
+                "type": "alert",
+                "timestamp": datetime.utcnow().isoformat(),
+                "user_id": self._user_id,
+                "session_id": None,
+                "risk_score": 30.0,
+                "level": "LOW",
+                "factors": ["break_overrun"],
+                "reason": "break_overrun",
+                "break_type": break_type,
+                "resolved": False,
+            })
+        except Exception as exc:
+            logger.error("Break overrun alert persist error: %s", exc)
 
     def _log_policy_violation(self, break_type: str) -> None:
         """Write a policy_violation document to MongoDB."""
@@ -340,8 +381,14 @@ class BreakManager:
     def _run_return_liveness(self) -> None:
         """Trigger C2 face liveness check when employee returns from break."""
         try:
-            from C2_facial_liveness.src import run_liveness_check
-            result = run_liveness_check(user_id=self._user_id)
+            result = None
+            try:
+                from C3_activity_monitoring.src.session_monitor import run_post_break_session_check
+                result = run_post_break_session_check(user_id=self._user_id)
+            except ImportError:
+                from C2_facial_liveness.src import run_liveness_check
+                result = run_liveness_check(user_id=self._user_id)
+
             if not result:
                 logger.warning("Post-break liveness check FAILED for %s", self._user_id)
                 if self._alert_sender:
@@ -355,6 +402,30 @@ class BreakManager:
             logger.debug("C2 liveness not available — skipping post-break check.")
         except Exception as exc:
             logger.error("Post-break liveness error: %s", exc)
+
+    def _show_break_started_notice(self) -> None:
+        """Show lightweight top-most notification when break starts."""
+        def _build_notice():
+            try:
+                note = ctk.CTkToplevel()
+                note.title("Break Notice")
+                note.geometry("300x90")
+                note.resizable(False, False)
+                note.attributes("-topmost", True)
+                note.configure(fg_color="#0f1117")
+
+                ctk.CTkLabel(
+                    note,
+                    text="Break started - monitoring paused",
+                    text_color="#e2e8f0",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                ).pack(expand=True, padx=12, pady=18)
+                note.after(2200, note.destroy)
+                note.mainloop()
+            except Exception:
+                pass
+
+        threading.Thread(target=_build_notice, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Break countdown UI

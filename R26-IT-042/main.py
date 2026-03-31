@@ -82,6 +82,7 @@ class Application:
         self._session_id: Optional[str] = None
         self._employee: Optional[dict] = None
         self._monitor_threads: list[threading.Thread] = []
+        self._employee_panel = None
         self._shutdown_event = threading.Event()
         self._root: Optional[ctk.CTk] = None
         self._liveness_score = 1.0
@@ -236,6 +237,7 @@ class Application:
             session_id=self._session_id,
             break_manager=getattr(self, "_break_manager", None)
         )
+        self._employee_panel = panel
         # Add a helper to the root so panel can call it
         root.show_login = self._restart_at_login
         panel.protocol("WM_DELETE_WINDOW", self._shutdown)
@@ -350,6 +352,12 @@ class Application:
                 wifi_ssid_match=False,
                 face_liveness_score=self._liveness_score,
             )
+            try:
+                panel = getattr(self, "_employee_panel", None)
+                if panel is not None and hasattr(panel, "set_break_manager"):
+                    panel.set_break_manager(self._break_manager)
+            except Exception:
+                pass
         except ImportError:
             log.warning("C3 not available — skipping activity monitoring.")
         except Exception as exc:

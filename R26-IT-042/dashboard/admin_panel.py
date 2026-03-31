@@ -1487,6 +1487,16 @@ class AdminPanel(ctk.CTk):
 
         threading.Thread(target=_run_server, daemon=True, name="AdminAlertWebSocketServer").start()
 
+    def _open_break_config_popup(self) -> None:
+        """Allow admin to configure the shared break schedule."""
+        try:
+            from C3_activity_monitoring.src.break_manager import BreakManager
+            bm = BreakManager()
+            bm.load_breaks()
+            bm.show_configure_popup(parent=self)
+        except Exception as exc:
+            messagebox.showerror("Break Configuration", f"Could not open break config: {exc}")
+
     def _build_alerts_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self._tab_frame, fg_color=C_BG, corner_radius=0)
 
@@ -1494,6 +1504,8 @@ class AdminPanel(ctk.CTk):
         topbar.pack(fill="x", padx=20, pady=(16, 8))
         ctk.CTkLabel(topbar, text="Alert Feed", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(side="left")
         ctk.CTkButton(topbar, text="Refresh", width=90, fg_color=C_BORDER, hover_color=C_BLUE, command=self._refresh_alerts).pack(side="right")
+        ctk.CTkButton(topbar, text="Configure Breaks", width=130, fg_color=C_TEAL_D, hover_color=C_TEAL,
+                      command=self._open_break_config_popup).pack(side="right", padx=(0, 8))
 
         self._alerts_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._alerts_frame.pack(fill="both", expand=True, padx=20, pady=(4, 16))
