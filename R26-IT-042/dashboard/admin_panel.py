@@ -16,6 +16,7 @@ Run standalone:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import re
@@ -27,6 +28,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 # ── Path bootstrap ────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -229,6 +232,14 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                     ctk.CTkLabel(ff, text=f"  • {f_name}", font=ctk.CTkFont(size=12, weight="bold" if f_color==C_RED else "normal"), text_color=f_color).pack(anchor="w", padx=16)
                 ctk.CTkFrame(ff, fg_color="transparent", height=8).pack()
 
+        # App Usage Analytics
+        try:
+            from dashboard.app_usage_tracker import AppUsageTrackerUI
+            tracker = AppUsageTrackerUI(body, db_client=self._db, emp_id=emp_id)
+            tracker.show()
+        except Exception as exc:
+            logger.debug("App usage tracker load error: %s", exc)
+
         # Alert history
         alerts = self._get_alerts(emp_id)
         af = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
@@ -245,14 +256,29 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
 
         # Activity logs (recent windows)
         activity_logs = self._get_activity_logs(emp_id)
+        total_activity_logs = self._get_activity_log_count(emp_id)
         lgf = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
         lgf.pack(fill="x", pady=(0, 12))
+        logs_header = ctk.CTkFrame(lgf, fg_color="transparent")
+        logs_header.pack(fill="x", padx=16, pady=(12, 6))
+
         ctk.CTkLabel(
-            lgf,
-            text=f"Recent Activity Logs ({len(activity_logs)})",
+            logs_header,
+            text=f"Recent Activity Logs ({len(activity_logs)} shown of {total_activity_logs})",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=C_TEXT,
-        ).pack(anchor="w", padx=16, pady=(12, 6))
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            logs_header,
+            text="Delete Excess",
+            width=120,
+            height=28,
+            fg_color="#7f1d1d",
+            hover_color="#991b1b",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=lambda: self._delete_excess_activity_logs(emp_id, keep_latest=200),
+        ).pack(side="right")
 
         if not activity_logs:
             ctk.CTkLabel(
@@ -322,6 +348,17 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                     hover_color=C_BLUE,
                     font=ctk.CTkFont(size=10),
                     command=lambda d=item: self._show_activity_log_detail(d),
+                ).pack(side="right", padx=4)
+
+                ctk.CTkButton(
+                    row,
+                    text="Delete",
+                    width=58,
+                    height=24,
+                    fg_color="#7f1d1d",
+                    hover_color="#991b1b",
+                    font=ctk.CTkFont(size=10, weight="bold"),
+                    command=lambda d=item: self._delete_activity_log(emp_id, d),
                 ).pack(side="right", padx=4)
 
         ctk.CTkFrame(lgf, fg_color="transparent", height=8).pack()
@@ -506,7 +543,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             col = self._db.get_collection("activity_logs")
             if col is not None:
                 projection = {
-                    "_id": 0,
+                    "_id": 1,
                     "timestamp": 1,
                     "composite_risk_score": 1,
                     "productivity_score": 1,
@@ -523,6 +560,96 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         except Exception:
             pass
         return []
+
+    def _get_activity_log_count(self, emp_id: str) -> int:
+        try:
+            col = self._db.get_collection("activity_logs")
+            if col is not None:
+                return int(col.count_documents({"user_id": emp_id}))
+        except Exception:
+            pass
+        return 0
+
+    def _delete_activity_log(self, emp_id: str, log_doc: dict) -> None:
+        try:
+            col = self._db.get_collection("activity_logs")
+            if col is None:
+                messagebox.showerror("Delete Activity Log", "Activity log collection is unavailable.")
+                return
+
+            ts = str(log_doc.get("timestamp") or "")
+            confirm = messagebox.askyesno(
+                "Delete Activity Log",
+                f"Delete this activity log for {emp_id}?\n\nTime: {_fmt_time(ts)}\nThis action cannot be undone.",
+            )
+            if not confirm:
+                return
+
+            query = {"user_id": emp_id}
+            if log_doc.get("_id") is not None:
+                query["_id"] = log_doc.get("_id")
+            elif ts:
+                query["timestamp"] = ts
+
+            result = col.delete_one(query)
+            if result.deleted_count == 0:
+                messagebox.showwarning("Delete Activity Log", "No matching log found. It may already be deleted.")
+                return
+
+            self.destroy()
+            EmployeeDetailWindow(self.master, self._emp, self._db)
+
+        except Exception as exc:
+            messagebox.showerror("Delete Activity Log", f"Failed to delete log: {exc}")
+
+    def _delete_excess_activity_logs(self, emp_id: str, keep_latest: int = 200) -> None:
+        try:
+            col = self._db.get_collection("activity_logs")
+            if col is None:
+                messagebox.showerror("Delete Excess Logs", "Activity log collection is unavailable.")
+                return
+
+            total_logs = int(col.count_documents({"user_id": emp_id}))
+            if total_logs <= keep_latest:
+                messagebox.showinfo(
+                    "Delete Excess Logs",
+                    f"No excess logs to delete for {emp_id}.\nCurrent logs: {total_logs}\nRetention limit: {keep_latest}",
+                )
+                return
+
+            delete_count = total_logs - keep_latest
+            confirm = messagebox.askyesno(
+                "Delete Excess Logs",
+                (
+                    f"Delete {delete_count} old activity logs for {emp_id}?\n\n"
+                    f"This will keep the newest {keep_latest} logs and permanently remove older records."
+                ),
+            )
+            if not confirm:
+                return
+
+            cutoff_doc = col.find({"user_id": emp_id}, {"timestamp": 1, "_id": 0}).sort("timestamp", -1).skip(keep_latest).limit(1)
+            cutoff_list = list(cutoff_doc)
+            if not cutoff_list:
+                messagebox.showinfo("Delete Excess Logs", "No cutoff point found. Nothing was deleted.")
+                return
+
+            cutoff_ts = cutoff_list[0].get("timestamp")
+            if not cutoff_ts:
+                messagebox.showerror("Delete Excess Logs", "Could not determine timestamp cutoff.")
+                return
+
+            result = col.delete_many({"user_id": emp_id, "timestamp": {"$lt": cutoff_ts}})
+            messagebox.showinfo(
+                "Delete Excess Logs",
+                f"Deleted {result.deleted_count} old activity logs for {emp_id}.",
+            )
+
+            self.destroy()
+            EmployeeDetailWindow(self.master, self._emp, self._db)
+
+        except Exception as exc:
+            messagebox.showerror("Delete Excess Logs", f"Failed to delete logs: {exc}")
 
     def _show_activity_log_detail(self, log_doc: dict) -> None:
         lines = [
