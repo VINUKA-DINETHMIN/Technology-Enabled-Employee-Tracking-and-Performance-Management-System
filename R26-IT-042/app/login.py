@@ -456,7 +456,7 @@ class LoginWindow(ctk.CTk):
         detector = None
         try:
             import cv2
-            from C2_facial_liveness.src.liveness_detector import LivenessDetector
+            from C3_activity_monitoring.src.liveness_detector import LivenessDetector
             from PIL import Image, ImageTk
             import base64
 

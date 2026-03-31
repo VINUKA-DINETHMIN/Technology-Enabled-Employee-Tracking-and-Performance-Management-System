@@ -168,6 +168,9 @@ def start_monitoring(
     try:
         break_mgr = BreakManager(
             trackers=(keyboard, mouse, app),
+            db_client=db_client,
+            alert_sender=alert_sender,
+            user_id=user_id,
         )
         break_mgr.load_breaks()
     except Exception as exc:

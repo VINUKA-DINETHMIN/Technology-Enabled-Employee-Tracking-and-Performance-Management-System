@@ -381,6 +381,7 @@ class EmployeePanel(ctk.CTkToplevel):
         self._session_start = time.time()
         self._known_task_ids: set = set()
         self._closed = False
+        self._bm = break_manager
 
         emp_name = employee.get("full_name", self._user_id)
         self.title(f"WorkPlus — {emp_name}")
@@ -549,32 +550,64 @@ class EmployeePanel(ctk.CTkToplevel):
         self._next_break_lbl = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=13), text_color=C_TEAL)
         self._next_break_lbl.pack(anchor="w", padx=24, pady=4)
 
-        ctk.CTkButton(frame, text="🚀 Go on Break Now", fg_color=C_TEAL, hover_color=C_TEAL_D, height=44,
-                      font=ctk.CTkFont(size=14, weight="bold"), command=self._start_manual_break).pack(padx=20, pady=20, fill="x")
+        # Manual break controls (separate buttons)
+        br_actions = ctk.CTkFrame(frame, fg_color="transparent")
+        br_actions.pack(fill="x", padx=20, pady=(8, 20))
+        ctk.CTkButton(
+            br_actions,
+            text="Lunch Break",
+            fg_color=C_TEAL,
+            hover_color=C_TEAL_D,
+            height=40,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=lambda: self._start_break_type("lunch"),
+        ).pack(fill="x", pady=(0, 8))
+
+        row = ctk.CTkFrame(br_actions, fg_color="transparent")
+        row.pack(fill="x")
+        ctk.CTkButton(
+            row,
+            text="Short 1",
+            fg_color=C_BORDER,
+            hover_color=C_BLUE,
+            height=36,
+            command=lambda: self._start_break_type("short_1"),
+        ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(
+            row,
+            text="Short 2",
+            fg_color=C_BORDER,
+            hover_color=C_BLUE,
+            height=36,
+            command=lambda: self._start_break_type("short_2"),
+        ).pack(side="left", expand=True, fill="x", padx=3)
+        ctk.CTkButton(
+            row,
+            text="Short 3",
+            fg_color=C_BORDER,
+            hover_color=C_BLUE,
+            height=36,
+            command=lambda: self._start_break_type("short_3"),
+        ).pack(side="left", expand=True, fill="x", padx=(6, 0))
 
         return frame
 
-    def _start_manual_break(self) -> None:
+    def _start_break_type(self, break_type: str) -> None:
         if not self._bm:
             import tkinter.messagebox as mb
             mb.showerror("Error", "Break manager not initialized.")
             return
-        
-        # Show a small choice dialog for manual break
-        popup = ctk.CTkToplevel(self)
-        popup.title("Select Break Type")
-        popup.geometry("300x250")
-        popup.attributes("-topmost", True)
-        
-        ctk.CTkLabel(popup, text="Which break are you taking?", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=20)
-        
-        def _take(btype):
-            popup.destroy()
-            self._bm.start_break_timer(btype)
+        try:
+            if not self._bm.get_breaks():
+                self._bm.load_breaks()
+            self._bm.start_break_timer(break_type)
+        except Exception as exc:
+            import tkinter.messagebox as mb
+            mb.showerror("Error", f"Could not start break: {exc}")
 
-        ctk.CTkButton(popup, text="Lunch Break (60 min)", command=lambda: _take("lunch")).pack(pady=5, padx=20, fill="x")
-        ctk.CTkButton(popup, text="Short Break (15 min)", command=lambda: _take("short_1")).pack(pady=5, padx=20, fill="x")
-        ctk.CTkButton(popup, text="Cancel", fg_color=C_BORDER, command=popup.destroy).pack(pady=20, padx=20)
+    def set_break_manager(self, break_manager) -> None:
+        """Bind live BreakManager after panel creation (when C3 starts async)."""
+        self._bm = break_manager
 
     def _tick_session_timer(self) -> None:
         if self._closed or not self.winfo_exists(): return
