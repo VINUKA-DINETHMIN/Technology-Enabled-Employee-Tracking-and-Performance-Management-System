@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -625,7 +626,7 @@ def _select_venv_python() -> Optional[Path]:
 
 
 def _ensure_venv_interpreter() -> None:
-    """Re-exec with local venv interpreter when started from system Python."""
+    """Relaunch with local venv interpreter when started from system Python."""
     if os.environ.get("WORKPLUS_SKIP_VENV_REEXEC") == "1":
         return
 
@@ -640,7 +641,10 @@ def _ensure_venv_interpreter() -> None:
 
     os.environ["WORKPLUS_SKIP_VENV_REEXEC"] = "1"
     print(f"[WorkPlus] Switching interpreter to venv: {venv_py}")
-    os.execv(str(venv_py), [str(venv_py), *sys.argv])
+    env = os.environ.copy()
+    env["WORKPLUS_SKIP_VENV_REEXEC"] = "1"
+    subprocess.Popen([str(venv_py), *sys.argv], cwd=str(_PROJECT_ROOT), env=env)
+    raise SystemExit(0)
 
 def main() -> None:
     _ensure_venv_interpreter()
