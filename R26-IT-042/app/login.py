@@ -68,6 +68,9 @@ _MAX_ATTEMPTS = 3
 
 # Face similarity threshold (cosine similarity of histogram embeddings)
 _FACE_THRESHOLD = 0.45
+_FACENET_THRESHOLD = 0.78
+_FACENET_SOFT_THRESHOLD = 0.72
+_FACE_VERIFY_HITS_REQUIRED = 4
 
 LOGO_PATH = _ROOT / "assets" / "logo.png"
 
@@ -479,10 +482,20 @@ class LoginWindow(ctk.CTk):
 
             # Get stored FaceNet embedding (pre-computed at registration)
             stored_embedding = self._current_employee.get("face_embedding", [])
-            if not stored_embedding and verifier is not None:
-                # No embedding stored (old registration) - fall back to histogram
-                logger.warning("No FaceNet embedding found. Using histogram embeddings.")
-                verifier = None
+            if verifier is not None:
+                # Some legacy records store 128-bin histogram vectors under face_embedding.
+                # Those are incompatible with FaceNet and produce very low scores.
+                needs_migration = not self._is_facenet_embedding(stored_embedding)
+                if not needs_migration and not self._embedding_consistent_with_images(verifier, stored_embedding):
+                    needs_migration = True
+
+                if needs_migration:
+                    stored_embedding = self._bootstrap_facenet_embedding(verifier)
+                    if stored_embedding:
+                        logger.info("FaceNet embedding migrated from stored face images.")
+                    else:
+                        logger.warning("No FaceNet embedding found. Using histogram embeddings.")
+                        verifier = None
 
             # Face detection (use Haar Cascade for speed)
             cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -490,6 +503,10 @@ class LoginWindow(ctk.CTk):
 
             # 2. Verification Loop
             verified_count = 0
+            strong_match_count = 0
+            soft_match_count = 0
+            best_match_score = 0.0
+            liveness_passed_once = False
             start_ts = time.time()
             max_duration = 30.0  # 30 seconds to verify
 
@@ -539,7 +556,7 @@ class LoginWindow(ctk.CTk):
                             is_match, match_score = verifier.verify(
                                 frame, 
                                 stored_embedding,
-                                threshold=0.85,  # ← UPGRADED threshold (was 0.45)
+                                threshold=_FACENET_THRESHOLD,
                                 detection_box=detection_box
                             )
                         except Exception as e:
@@ -553,16 +570,33 @@ class LoginWindow(ctk.CTk):
                         if stored_emb:
                             current_emb = self._compute_embedding(face_roi)
                             match_score = self._cosine_similarity(current_emb, stored_emb)
-                            if match_score >= 0.85:  # ← UPGRADED threshold (was 0.45)
+                            if match_score >= _FACE_THRESHOLD:
                                 is_match = True
 
                     if is_match:
                         verified_count += 1
+                        if match_score >= 0.90:
+                            strong_match_count += 1
+                        if match_score >= _FACENET_SOFT_THRESHOLD:
+                            soft_match_count += 1
                     else:
                         verified_count = max(verified_count - 1, 0)
+                        strong_match_count = max(strong_match_count - 1, 0)
+                        if match_score >= _FACENET_SOFT_THRESHOLD:
+                            soft_match_count += 1
+                        else:
+                            soft_match_count = max(soft_match_count - 1, 0)
+
+                    best_match_score = max(best_match_score, match_score)
 
                 liveness = detector.get_result()
-                if verified_count >= 8 and liveness.passed:
+                if liveness.passed:
+                    liveness_passed_once = True
+                if (
+                    verified_count >= _FACE_VERIFY_HITS_REQUIRED
+                    or strong_match_count >= 2
+                    or soft_match_count >= 10
+                ) and liveness.passed:
                     self.after(0, lambda s=liveness.liveness_score: self._on_face_success(s))
                     return
 
@@ -570,10 +604,10 @@ class LoginWindow(ctk.CTk):
                 if len(faces) == 0:
                     msg = "Position your face in the box"
                 elif not liveness.passed:
-                    msg = f"Liveness check... (Blinks: {liveness.blink_count})"
-                elif verified_count < 8:
+                    msg = f"Liveness check... (Blinks: {liveness.blink_count}, Move: {'Y' if liveness.head_moved else 'N'})"
+                elif verified_count < _FACE_VERIFY_HITS_REQUIRED:
                     method = "FaceNet" if (verifier is not None) else "Histogram"
-                    msg = f"Verifying identity [{method}: {match_score:.2f}]..."
+                    msg = f"Verifying identity [{method}: {match_score:.2f}] ({verified_count}/{_FACE_VERIFY_HITS_REQUIRED})..."
                 else:
                     msg = "Keep still..."
                 
@@ -585,11 +619,14 @@ class LoginWindow(ctk.CTk):
 
                 time.sleep(1 / 20)
 
-            self.after(0, self._on_face_fail)
+            reason = "face"
+            if best_match_score >= _FACENET_SOFT_THRESHOLD and not liveness_passed_once:
+                reason = "liveness"
+            self.after(0, lambda r=reason: self._on_face_fail(r))
 
         except Exception as exc:
             logger.error("Face check internal error: %s", exc)
-            self.after(0, self._on_face_fail)
+            self.after(0, lambda: self._on_face_fail("internal"))
         finally:
             self._face_running = False
             if cap and cap.isOpened():
@@ -617,6 +654,90 @@ class LoginWindow(ctk.CTk):
         except Exception:
             return []
 
+    def _bootstrap_facenet_embedding(self, verifier) -> list:
+        """Build and persist FaceNet embedding for legacy users from stored face images."""
+        try:
+            import cv2
+            import base64
+
+            images_b64 = self._current_employee.get("face_images", []) or []
+            if not images_b64:
+                return []
+
+            embeddings = []
+            for img_b64 in images_b64[:5]:
+                try:
+                    raw = base64.b64decode(img_b64)
+                    arr = np.frombuffer(raw, dtype=np.uint8)
+                    gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                    if gray is None:
+                        continue
+                    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    emb = verifier.get_embedding(bgr)
+                    if emb is not None:
+                        embeddings.append(emb)
+                except Exception:
+                    continue
+
+            if not embeddings:
+                return []
+
+            avg_emb = np.mean(np.array(embeddings), axis=0).tolist()
+            self._current_employee["face_embedding"] = avg_emb
+
+            emp_id = self._current_employee.get("employee_id", "")
+            col = self._db.get_collection("employees")
+            if col is not None and emp_id:
+                col.update_one({"employee_id": emp_id}, {"$set": {"face_embedding": avg_emb}})
+
+            return avg_emb
+        except Exception as exc:
+            logger.debug("Failed to backfill FaceNet embedding: %s", exc)
+            return []
+
+    def _is_facenet_embedding(self, embedding: list) -> bool:
+        """Heuristic check: distinguish FaceNet vectors from legacy histogram vectors."""
+        try:
+            if not embedding:
+                return False
+            vec = np.array(embedding, dtype=np.float32).flatten()
+            if vec.size != 128:
+                return False
+
+            # Legacy histogram vectors have large bin counts (often >> 10).
+            # FaceNet vectors are compact float features near zero-centered range.
+            max_abs = float(np.max(np.abs(vec)))
+            mean_abs = float(np.mean(np.abs(vec)))
+            return max_abs <= 5.0 and mean_abs <= 1.0
+        except Exception:
+            return False
+
+    def _embedding_consistent_with_images(self, verifier, stored_embedding: list) -> bool:
+        """Quickly verify stored embedding still matches employee's enrolled face images."""
+        try:
+            import cv2
+            import base64
+
+            images_b64 = self._current_employee.get("face_images", []) or []
+            if not images_b64:
+                return True
+
+            sample = images_b64[0]
+            arr = np.frombuffer(base64.b64decode(sample), dtype=np.uint8)
+            gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+            if gray is None:
+                return True
+
+            bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            emb = verifier.get_embedding(bgr)
+            if emb is None:
+                return True
+
+            score = verifier.cosine_similarity(emb, np.array(stored_embedding, dtype=np.float32))
+            return score >= 0.45
+        except Exception:
+            return True
+
     def _cosine_similarity(self, a: list, b: list) -> float:
         """Cosine similarity between two embeddings."""
         try:
@@ -641,7 +762,7 @@ class LoginWindow(ctk.CTk):
         self._set_status("Identity verified! Starting session…", color=C_GREEN)
         self.after(800, lambda: self._finalize_login(liveness_score))
 
-    def _on_face_fail(self) -> None:
+    def _on_face_fail(self, reason: str = "face") -> None:
         self._face_running = False
         self._face_attempts += 1
 
@@ -672,8 +793,19 @@ class LoginWindow(ctk.CTk):
             self._set_status(f"Face verification failed {_MAX_ATTEMPTS} times. Account locked for {_FACE_LOCKOUT_MINUTES} minutes.")
             self.after(3000, self._show_step_1)
         else:
-            self._face_status_var.set("Face not recognized")
-            self._set_status(f"Face not recognized. ({self._face_attempts}/{_MAX_ATTEMPTS}). Try again.")
+            if reason == "liveness":
+                self._face_status_var.set("Liveness check not passed")
+                self._set_status(
+                    f"Liveness not confirmed. Blink once or move your head slightly. ({self._face_attempts}/{_MAX_ATTEMPTS})"
+                )
+            elif reason == "internal":
+                self._face_status_var.set("Verification interrupted")
+                self._set_status(
+                    f"Face verification interrupted. Please retry. ({self._face_attempts}/{_MAX_ATTEMPTS})"
+                )
+            else:
+                self._face_status_var.set("Face not recognized")
+                self._set_status(f"Face not recognized. ({self._face_attempts}/{_MAX_ATTEMPTS}). Try again.")
             self._face_btn.configure(text="Retry", command=self._show_step_3)
 
     def _cancel_face(self) -> None:
