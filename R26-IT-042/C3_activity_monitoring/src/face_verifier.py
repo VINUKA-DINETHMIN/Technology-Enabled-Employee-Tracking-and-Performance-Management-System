@@ -105,31 +105,30 @@ class FaceVerifier:
             import cv2
             
             h, w = frame.shape[:2]
-            
-            # If no detection box provided, assume face fills reasonable portion
-            # (this is a simplified approach; better to use MediaPipe detection)
-            if detection_box is None:
-                # Assume face roughly 40-60% of frame
-                box_size = min(h, w) // 2
-                x = (w - box_size) // 2
-                y = (h - box_size) // 2
-                detection_box = np.array([x, y, box_size, box_size], dtype=np.uint32)
-            
-            x, y, box_w, box_h = detection_box
-            x, y = max(0, x), max(0, y)
-            box_w = min(box_w, w - x)
-            box_h = min(box_h, h - y)
-            
-            if box_w <= 0 or box_h <= 0:
+
+            if detection_box is not None:
+                x, y, box_w, box_h = [int(v) for v in np.array(detection_box).flatten()[:4]]
+                x, y = max(0, x), max(0, y)
+                box_w = min(box_w, w - x)
+                box_h = min(box_h, h - y)
+                if box_w <= 0 or box_h <= 0:
+                    return None
+                face_roi = frame[y:y + box_h, x:x + box_w]
+            else:
+                # For already-cropped registration images, use full frame.
+                face_roi = frame
+
+            if face_roi is None or face_roi.size == 0:
                 return None
-            
-            # Create aligned face crop for embedding
-            # FaceRecognizerSF expects a detection object-like interface
-            # We'll use alignCrop with the bounding box
-            aligned_face = self.recognizer.alignCrop(frame, detection_box)
-            
-            # Extract the embedding (returns Shape (1, 128))
-            embedding = self.recognizer.feature(aligned_face)
+
+            # Normalize lighting so live webcam frames are closer to stored registration crops.
+            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
+            face_input = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+            # SFace expects canonical face-like input size.
+            face_input = cv2.resize(face_input, (112, 112), interpolation=cv2.INTER_AREA)
+            embedding = self.recognizer.feature(face_input)
             
             # Flatten to 1D and return
             return embedding.flatten().astype(np.float32)

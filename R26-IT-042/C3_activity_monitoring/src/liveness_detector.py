@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Eye Aspect Ratio threshold for blink detection
 _EAR_THRESHOLD = 0.21
 # Minimum head movement (normalized units) for movement detection
-_HEAD_MOVE_THRESHOLD = 0.015
+_HEAD_MOVE_THRESHOLD = 0.010
 # How many frames to collect for analysis
 _ANALYSIS_FRAMES = 60
 # Minimum blinks required to pass
@@ -87,10 +87,18 @@ class LivenessDetector:
         try:
             # Suppress TensorFlow stderr clutter on systems without AVX
             import os
-            import sys
+            import warnings
             os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+            os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+            warnings.filterwarnings(
+                "ignore",
+                message=r"SymbolDatabase.GetPrototype\(\) is deprecated.*",
+                category=UserWarning,
+            )
             
             import mediapipe as mp
+            if not hasattr(mp, "solutions") or not hasattr(mp.solutions, "face_mesh"):
+                raise RuntimeError("This mediapipe build does not expose mp.solutions.face_mesh")
             self._face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
                 max_num_faces=1,
@@ -139,7 +147,6 @@ class LivenessDetector:
 
         # ── Standard MediaPipe/TensorFlow Detection ─────────────────
         try:
-            import mediapipe as mp
             results = self._face_mesh.process(frame_rgb)
             if not results.multi_face_landmarks:
                 return False
@@ -189,11 +196,12 @@ class LivenessDetector:
             head_moved = head_range >= self._head_move_threshold
 
         blink_ok = self._blink_count >= self._min_blinks
-        blink_score = min(self._blink_count / self._min_blinks, 1.0) * 0.6
-        head_score  = 0.4 if head_moved else 0.0
+        blink_score = min(self._blink_count / self._min_blinks, 1.0) * 0.5
+        head_score  = 0.5 if head_moved else 0.0
         score       = round(blink_score + head_score, 3)
 
-        passed = blink_ok and score >= 0.6
+        # Accept either a natural blink or clear head movement.
+        passed = (blink_ok or head_moved) and score >= 0.45 and self._frame_count >= 12
 
         return LivenessResult(
             passed=passed,

@@ -35,10 +35,15 @@ import os
 import sys
 import threading
 import time
+from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 from typing import Optional
 
 import customtkinter as ctk
+
+# Keep TensorFlow/MediaPipe runtime logs quieter in console output.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 # ── Path bootstrap ────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -107,6 +112,14 @@ class Application:
 
     def _check_platform(self) -> None:
         log.info("Platform: %s", sys.platform)
+        log.info("Python executable: %s", sys.executable)
+        try:
+            mp_version = version("mediapipe")
+            log.info("MediaPipe package version=%s", mp_version)
+        except PackageNotFoundError:
+            log.warning("MediaPipe package is not installed in this interpreter.")
+        except Exception as exc:
+            log.warning("MediaPipe package check failed: %s", exc)
         if sys.platform == "darwin":
             from tkinter import messagebox
             messagebox.showinfo(
@@ -605,7 +618,33 @@ class Application:
 # Entry point
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _select_venv_python() -> Optional[Path]:
+    """Return local venv python path if it exists."""
+    venv_py = _PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    return venv_py if venv_py.exists() else None
+
+
+def _ensure_venv_interpreter() -> None:
+    """Re-exec with local venv interpreter when started from system Python."""
+    if os.environ.get("WORKPLUS_SKIP_VENV_REEXEC") == "1":
+        return
+
+    venv_py = _select_venv_python()
+    if venv_py is None:
+        return
+
+    current = str(Path(sys.executable).resolve()).lower()
+    target = str(venv_py.resolve()).lower()
+    if current == target:
+        return
+
+    os.environ["WORKPLUS_SKIP_VENV_REEXEC"] = "1"
+    print(f"[WorkPlus] Switching interpreter to venv: {venv_py}")
+    os.execv(str(venv_py), [str(venv_py), *sys.argv])
+
 def main() -> None:
+    _ensure_venv_interpreter()
+
     parser = argparse.ArgumentParser(description="WorkPlus Employee Monitoring System")
     parser.add_argument("--admin", action="store_true", help="Open the admin panel directly")
     args = parser.parse_args()

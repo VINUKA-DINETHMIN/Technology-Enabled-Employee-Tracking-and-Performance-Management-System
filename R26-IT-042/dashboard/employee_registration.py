@@ -152,10 +152,13 @@ class FaceCaptureWindow(ctk.CTkToplevel):
             # Load MediaPipe face detection
             try:
                 import mediapipe as mp
-                self._face_detection = mp.solutions.face_detection.FaceDetection(
-                    model_selection=0, min_detection_confidence=0.7
-                )
-            except ImportError:
+                if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_detection"):
+                    self._face_detection = mp.solutions.face_detection.FaceDetection(
+                        model_selection=0, min_detection_confidence=0.7
+                    )
+                else:
+                    self._face_detection = None
+            except Exception:
                 self._face_detection = None
 
             self._running = True
