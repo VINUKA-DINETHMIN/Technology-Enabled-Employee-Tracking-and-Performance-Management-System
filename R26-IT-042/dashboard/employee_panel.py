@@ -200,6 +200,7 @@ class TaskCard(ctk.CTkFrame):
         self._timer_running = False
         self._timer_start: Optional[float] = None
         self._timer_label: Optional[ctk.CTkLabel] = None
+        self._timer_after_id = None
         self._closed = False
         self._build()
 
@@ -290,6 +291,7 @@ class TaskCard(ctk.CTkFrame):
 
     def _pause_task(self) -> None:
         self._timer_running = False
+        self._cancel_timer_after()
         now = datetime.utcnow().isoformat()
         try:
             col = self._db.get_collection("tasks")
@@ -308,6 +310,7 @@ class TaskCard(ctk.CTkFrame):
     def _complete_task(self) -> None:
         now = datetime.utcnow().isoformat()
         self._timer_running = False
+        self._cancel_timer_after()
         try:
             col = self._db.get_collection("tasks")
             if col is not None:
@@ -328,7 +331,21 @@ class TaskCard(ctk.CTkFrame):
         elapsed = time.time() - self._timer_start
         if self._timer_label:
             self._timer_label.configure(text=f"Active: {_fmt_duration(elapsed)}")
-        self.after(1000, self._tick_timer)
+        self._timer_after_id = self.after(1000, self._tick_timer)
+
+    def _cancel_timer_after(self) -> None:
+        if self._timer_after_id is not None:
+            try:
+                self.after_cancel(self._timer_after_id)
+            except Exception:
+                pass
+            self._timer_after_id = None
+
+    def destroy(self):
+        self._closed = True
+        self._timer_running = False
+        self._cancel_timer_after()
+        return super().destroy()
 
     def _log_task_start(self, started_at: str) -> None:
         """Feed task start to C4 productivity prediction."""
@@ -382,6 +399,7 @@ class EmployeePanel(ctk.CTkToplevel):
         self._known_task_ids: set = set()
         self._closed = False
         self._bm = break_manager
+        self._after_ids: set = set()
 
         emp_name = employee.get("full_name", self._user_id)
         self.title(f"WorkPlus — {emp_name}")
@@ -477,7 +495,7 @@ class EmployeePanel(ctk.CTkToplevel):
         self._tasks_scroll.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         
         # Initial load after a short delay to ensure UI is ready
-        self.after(500, self._refresh_tasks)
+        self._schedule(500, self._refresh_tasks)
         return frame
 
     def _refresh_tasks(self) -> None:
@@ -613,7 +631,7 @@ class EmployeePanel(ctk.CTkToplevel):
         if self._closed or not self.winfo_exists(): return
         elapsed = time.time() - self._session_start
         self._session_dur_lbl.configure(text=f"Duration: {_fmt_duration(elapsed)}")
-        self.after(1000, self._tick_session_timer)
+        self._schedule(1000, self._tick_session_timer)
 
     def _refresh_status(self) -> None:
         if not self._db or not self._db.is_connected:
@@ -709,11 +727,12 @@ class EmployeePanel(ctk.CTkToplevel):
     def _update_clock(self) -> None:
         if self._closed or not self.winfo_exists(): return
         self._time_lbl.configure(text=datetime.now().strftime("%H:%M:%S"))
-        self.after(1000, self._update_clock)
+        self._schedule(1000, self._update_clock)
 
     def _on_logout(self) -> None:
         if tk.messagebox.askyesno("Logout", "Are you sure you want to logout?"):
             self._closed = True
+            self._cancel_all_scheduled()
             self.destroy()
             # If parent has show_login, call it
             if hasattr(self.master, "show_login"):
@@ -726,18 +745,54 @@ class EmployeePanel(ctk.CTkToplevel):
     # ------------------------------------------------------------------
 
     def _refresh_all(self) -> None:
-        threading.Thread(target=self._refresh_tasks, daemon=True).start()
-        threading.Thread(target=self._refresh_status, daemon=True).start()
-        threading.Thread(target=self._refresh_attendance, daemon=True).start()
+        if self._closed or not self.winfo_exists():
+            return
+        self._refresh_tasks()
+        self._refresh_status()
+        self._refresh_attendance()
 
     def _start_polling(self) -> None:
         if self._closed or not self.winfo_exists(): return
-        self.after(POLL_TASKS_MS, self._poll)
+        self._schedule(POLL_TASKS_MS, self._poll)
 
     def _poll(self) -> None:
         if self._closed or not self.winfo_exists(): return
         self._refresh_all()
-        self.after(POLL_TASKS_MS, self._poll)
+        self._schedule(POLL_TASKS_MS, self._poll)
+
+    def _schedule(self, delay_ms: int, callback) -> None:
+        if self._closed or not self.winfo_exists():
+            return
+
+        holder = {}
+
+        def _wrapped() -> None:
+            aid = holder.get("id")
+            if aid is not None:
+                self._after_ids.discard(aid)
+            if self._closed or not self.winfo_exists():
+                return
+            callback()
+
+        try:
+            aid = self.after(delay_ms, _wrapped)
+            holder["id"] = aid
+            self._after_ids.add(aid)
+        except Exception:
+            pass
+
+    def _cancel_all_scheduled(self) -> None:
+        for aid in list(self._after_ids):
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+        self._after_ids.clear()
+
+    def destroy(self):
+        self._closed = True
+        self._cancel_all_scheduled()
+        return super().destroy()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
