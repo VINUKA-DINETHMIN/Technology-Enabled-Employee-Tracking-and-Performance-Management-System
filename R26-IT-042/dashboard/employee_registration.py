@@ -283,12 +283,22 @@ class FaceCaptureWindow(ctk.CTkToplevel):
             import base64
             
             face_b64s = []
+            embeddings = []
             
-            # Using 200x200 for LBPH training
+            # Using 200x200 for storage
             FACE_SIZE = (200, 200)
 
             # Initialize face detection for cropping
             cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+            # Initialize FaceNet verifier for embedding extraction
+            try:
+                from C3_activity_monitoring.src.face_verifier import FaceVerifier
+                verifier = FaceVerifier(model_path="models/face_recognition_sface.onnx")
+            except (ImportError, FileNotFoundError, RuntimeError) as e:
+                # Fallback if FaceNet not available
+                print(f"⚠ FaceNet not available: {e}. Using histogram embeddings only.")
+                verifier = None
 
             for frame in self._captured_frames:
                 # Extract image for the FACE region
@@ -299,17 +309,31 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                     # Take the largest face
                     (x, y, w, h) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
                     face_roi = gray[y:y+h, x:x+w]
+                    face_roi_color = cv2.cvtColor(face_roi, cv2.COLOR_GRAY2BGR)
                     
                     # Normalize lighting/contrast and resize
                     face_roi = cv2.equalizeHist(face_roi)
-                    face_roi = cv2.resize(face_roi, FACE_SIZE)
+                    face_roi_resized = cv2.resize(face_roi, FACE_SIZE)
                     
                     # Convert to base64 for storage
-                    _, buf = cv2.imencode(".jpg", face_roi, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    _, buf = cv2.imencode(".jpg", face_roi_resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     face_b64s.append(base64.b64encode(buf).decode("utf-8"))
+                    
+                    # Extract FaceNet embedding
+                    if verifier is not None:
+                        try:
+                            emb = verifier.get_embedding(face_roi_color)
+                            if emb is not None:
+                                embeddings.append(emb)
+                        except Exception as e:
+                            print(f"⚠ Embedding extraction failed: {e}")
             
-            # Avg embedding placeholder
-            avg_emb = []
+            # Average the embeddings if multiple captures available
+            if embeddings:
+                avg_emb = np.mean(np.array(embeddings), axis=0).tolist()
+            else:
+                # Fallback if no embeddings computed
+                avg_emb = []
 
             # 3. Hash password
             import bcrypt

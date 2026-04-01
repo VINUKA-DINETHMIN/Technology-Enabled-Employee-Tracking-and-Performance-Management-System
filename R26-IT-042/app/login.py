@@ -454,11 +454,11 @@ class LoginWindow(ctk.CTk):
     def _run_face_check(self) -> None:
         cap = None
         detector = None
+        verifier = None
         try:
             import cv2
             from C3_activity_monitoring.src.liveness_detector import LivenessDetector
             from PIL import Image, ImageTk
-            import base64
 
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
@@ -469,37 +469,29 @@ class LoginWindow(ctk.CTk):
             detector = LivenessDetector()
             detector.initialize()
 
-            # Load cascade once, not in the loop!
+            # Initialize FaceNet verifier
+            try:
+                from C3_activity_monitoring.src.face_verifier import FaceVerifier
+                verifier = FaceVerifier(model_path="models/face_recognition_sface.onnx")
+            except Exception as e:
+                logger.warning(f"FaceNet verifier failed to initialize: {e}. Using histogram fallback.")
+                verifier = None
+
+            # Get stored FaceNet embedding (pre-computed at registration)
+            stored_embedding = self._current_employee.get("face_embedding", [])
+            if not stored_embedding and verifier is not None:
+                # No embedding stored (old registration) - fall back to histogram
+                logger.warning("No FaceNet embedding found. Using histogram embeddings.")
+                verifier = None
+
+            # Face detection (use Haar Cascade for speed)
             cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             cascade = cv2.CascadeClassifier(cascade_path)
 
-            # 1. Prepare Identity Recognizer (LBPH)
-            face_images_b64 = self._current_employee.get("face_images", [])
-            recognizer = None
-            if face_images_b64:
-                try:
-                    recognizer = cv2.face.LBPHFaceRecognizer_create()
-                    train_imgs = []
-                    labels = []
-                    for b64 in face_images_b64:
-                        buf = base64.b64decode(b64)
-                        nparr = np.frombuffer(buf, np.uint8)
-                        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-                        if img is not None:
-                            train_imgs.append(img)
-                            labels.append(0) # single person
-                    if train_imgs:
-                        recognizer.train(train_imgs, np.array(labels))
-                    else:
-                        recognizer = None
-                except Exception as e:
-                    logger.error("Failed to train LBPH: %s", e)
-                    recognizer = None
-
-            # 2. Loop
+            # 2. Verification Loop
             verified_count = 0
             start_ts = time.time()
-            max_duration = 30.0 # 30 seconds to verify
+            max_duration = 30.0  # 30 seconds to verify
 
             while self._face_running and (time.time() - start_ts) < max_duration:
                 # Check if window/canvas still exists before continuing
@@ -530,32 +522,39 @@ class LoginWindow(ctk.CTk):
                     img_p = Image.fromarray(display).resize((360, 270))
                     photo = ImageTk.PhotoImage(img_p)
                     self.after(0, lambda p=photo: self._draw_cam(p))
-                except Exception: pass
+                except Exception:
+                    pass
 
-                # Biometric Check
+                # Face Verification
+                is_match = False
+                match_score = 0.0
+                
                 if len(faces) > 0:
                     (fx, fy, fw, fh) = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-                    face_roi = gray[fy:fy+fh, fx:fx+fw]
-                    face_roi = cv2.equalizeHist(face_roi)
                     
-                    is_match = False
-                    if recognizer is not None:
-                        # Real LBPH Match
-                        face_roi_resized = cv2.resize(face_roi, (200, 200))
-                        label, confidence = recognizer.predict(face_roi_resized)
-                        # LBPH confidence is distance (lower is better). Threshold ~60-80
-                        if label == 0 and confidence < 110:
-                            is_match = True
+                    # FaceNet verification (recommended)
+                    if verifier is not None and stored_embedding:
+                        try:
+                            detection_box = np.array([fx, fy, fw, fh], dtype=np.uint32)
+                            is_match, match_score = verifier.verify(
+                                frame, 
+                                stored_embedding,
+                                threshold=0.85,  # ← UPGRADED threshold (was 0.45)
+                                detection_box=detection_box
+                            )
+                        except Exception as e:
+                            logger.debug(f"FaceNet verification failed: {e}")
+                            is_match = False
                     else:
-                        # Fallback: Historgram similarity
+                        # Fallback: Histogram similarity (for old registrations)
+                        face_roi = gray[fy:fy+fh, fx:fx+fw]
+                        face_roi = cv2.equalizeHist(face_roi)
                         stored_emb = self._current_employee.get("face_embedding", [])
                         if stored_emb:
                             current_emb = self._compute_embedding(face_roi)
-                            sim = self._cosine_similarity(current_emb, stored_emb)
-                            if sim >= _FACE_THRESHOLD:
+                            match_score = self._cosine_similarity(current_emb, stored_emb)
+                            if match_score >= 0.85:  # ← UPGRADED threshold (was 0.45)
                                 is_match = True
-                        else:
-                            is_match = True
 
                     if is_match:
                         verified_count += 1
@@ -573,14 +572,16 @@ class LoginWindow(ctk.CTk):
                 elif not liveness.passed:
                     msg = f"Liveness check... (Blinks: {liveness.blink_count})"
                 elif verified_count < 8:
-                    msg = "Verifying identity..."
+                    method = "FaceNet" if (verifier is not None) else "Histogram"
+                    msg = f"Verifying identity [{method}: {match_score:.2f}]..."
                 else:
                     msg = "Keep still..."
                 
                 try:
                     if self.winfo_exists():
                         self.after(0, lambda m=msg: self._face_status_var.set(m))
-                except Exception: pass
+                except Exception:
+                    pass
 
                 time.sleep(1 / 20)
 
@@ -595,6 +596,8 @@ class LoginWindow(ctk.CTk):
                 cap.release()
             if detector:
                 detector.close()
+            if verifier:
+                verifier.close()
 
     def _draw_cam(self, photo) -> None:
         try:
@@ -605,6 +608,7 @@ class LoginWindow(ctk.CTk):
             pass
 
     def _compute_embedding(self, face_roi) -> list:
+        """Histogram embedding (fallback for old registrations)."""
         try:
             import cv2
             # face_roi is already grayscale from the caller
@@ -614,6 +618,7 @@ class LoginWindow(ctk.CTk):
             return []
 
     def _cosine_similarity(self, a: list, b: list) -> float:
+        """Cosine similarity between two embeddings."""
         try:
             va = np.array(a, dtype=np.float32)
             vb = np.array(b, dtype=np.float32)
