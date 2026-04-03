@@ -77,6 +77,7 @@ class FeatureExtractor:
         session_id: str,
         session_start: Optional[float] = None,
         location_mode: str = "unknown",
+        location_context: Optional[dict] = None,
         wifi_ssid_match: bool = False,
         face_liveness_score: float = 0.0,
     ) -> None:
@@ -88,6 +89,7 @@ class FeatureExtractor:
         self._session_id = session_id
         self._session_start = session_start or time.perf_counter()
         self._location_mode = location_mode
+        self._location_context = dict(location_context or {})
         self._wifi_ssid_match = wifi_ssid_match
         self._face_liveness_score = face_liveness_score
         self._device_fp = _device_fingerprint()
@@ -135,12 +137,36 @@ class FeatureExtractor:
             self._known_fp is None or self._device_fp == self._known_fp
         )
 
+        try:
+            geo_dev = float(geolocation_deviation or 0.0)
+        except Exception:
+            geo_dev = 0.0
+        if geo_dev == 0.0:
+            try:
+                geo_dev = float(self._location_context.get("geolocation_deviation", 0.0) or 0.0)
+            except Exception:
+                geo_dev = 0.0
+
         feature_vector = {
             # ── Metadata ───────────────────────────────────────────
             "timestamp": now_utc.isoformat(),
             "user_id": self._user_id,
             "session_id": self._session_id,
             "location_mode": self._location_mode,
+            "geo_city": self._location_context.get("city", "Unknown"),
+            "geo_region": self._location_context.get("region", "Unknown"),
+            "geo_country": self._location_context.get("country", "Unknown"),
+            "geo_timezone": self._location_context.get("timezone", "Unknown"),
+            "geo_isp": self._location_context.get("isp", "Unknown"),
+            "geo_org": self._location_context.get("org", "Unknown"),
+            "geo_asn": self._location_context.get("asn", "Unknown"),
+            "geo_confidence": float(self._location_context.get("confidence", 0.0) or 0.0),
+            "location_hint": self._location_context.get("location_hint", "Unknown"),
+            "inside_office_geofence": self._location_context.get("inside_office_geofence"),
+            "vpn_proxy_detected": bool(self._location_context.get("vpn_proxy_detected", False)),
+            "hosting_detected": bool(self._location_context.get("hosting_detected", False)),
+            "location_trust_score": float(self._location_context.get("location_trust_score", 0.0) or 0.0),
+            "office_radius_km": float(self._location_context.get("office_radius_km", 0.0) or 0.0),
             "in_break": in_break,
             "break_type": break_type,
             # ── Keyboard features ──────────────────────────────────
@@ -166,7 +192,7 @@ class FeatureExtractor:
             "hour_of_day": now_utc.hour,
             "day_of_week": now_utc.weekday(),  # 0=Monday … 6=Sunday
             # ── Environmental context ──────────────────────────────
-            "geolocation_deviation": geolocation_deviation,
+            "geolocation_deviation": geo_dev,
             "wifi_ssid_match": self._wifi_ssid_match,
             "device_fingerprint_match": device_fp_match,
             "face_liveness_score": self._face_liveness_score,
@@ -182,6 +208,10 @@ class FeatureExtractor:
         """Update location context (office/home/unknown)."""
         self._location_mode = mode
         self._wifi_ssid_match = wifi_match
+
+    def update_location_context(self, context: Optional[dict]) -> None:
+        """Update approximate geo context used in activity logs."""
+        self._location_context = dict(context or {})
 
     def set_known_device_fp(self, fp: str) -> None:
         """Set the registered device fingerprint for matching."""
