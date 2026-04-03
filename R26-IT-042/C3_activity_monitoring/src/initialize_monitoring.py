@@ -28,6 +28,7 @@ def start_monitoring(
     shutdown_event: Optional[threading.Event] = None,
     session_id: Optional[str] = None,
     location_mode: str = "unknown",
+    location_context: Optional[dict] = None,
     wifi_ssid_match: bool = False,
     face_liveness_score: float = 1.0,
 ) -> Optional[BreakManager]:
@@ -48,6 +49,8 @@ def start_monitoring(
         Current session UUID. Generated if not provided.
     location_mode:
         "office" | "home" | "unknown"
+    location_context:
+        Optional approximate location context (city/country/isp/confidence).
     wifi_ssid_match:
         Whether the current WiFi SSID matches the known office network.
     face_liveness_score:
@@ -159,6 +162,7 @@ def start_monitoring(
         session_id=session_id,
         session_start=session_start,
         location_mode=location_mode,
+        location_context=location_context,
         wifi_ssid_match=wifi_ssid_match,
         face_liveness_score=face_liveness_score,
     )

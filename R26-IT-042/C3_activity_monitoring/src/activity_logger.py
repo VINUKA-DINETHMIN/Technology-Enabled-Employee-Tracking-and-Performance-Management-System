@@ -105,6 +105,14 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
         factors.append("low_liveness_score")
     if fv.get("geolocation_deviation", 0.0) > 50.0:
         factors.append("unusual_location")
+    if fv.get("inside_office_geofence") is False:
+        factors.append("outside_office_geofence")
+    if fv.get("vpn_proxy_detected", False):
+        factors.append("vpn_or_proxy_detected")
+    if fv.get("hosting_detected", False):
+        factors.append("hosting_network_detected")
+    if float(fv.get("location_trust_score", 100.0) or 100.0) < 50.0:
+        factors.append("low_location_trust")
     if fv.get("top_app", "").lower() in _UNPRODUCTIVE_APPS:
         factors.append("unproductive_app_usage")
     if fv.get("active_task_id") is None and fv.get("typing_speed_wpm", 0.0) > 20:
@@ -121,6 +129,41 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
     if risk_score >= _HARD_WARN:
         factors.append("high_composite_risk")
     return factors
+
+
+def _geo_risk_adjustment(fv: dict) -> float:
+    """Extra risk penalties for location mismatch and suspicious network context."""
+    penalty = 0.0
+
+    try:
+        deviation = float(fv.get("geolocation_deviation", 0.0) or 0.0)
+    except Exception:
+        deviation = 0.0
+
+    if fv.get("inside_office_geofence") is False:
+        if deviation > 150.0:
+            penalty += 20.0
+        elif deviation > 50.0:
+            penalty += 12.0
+        else:
+            penalty += 8.0
+
+    if fv.get("vpn_proxy_detected", False):
+        penalty += 20.0
+    if fv.get("hosting_detected", False):
+        penalty += 12.0
+
+    try:
+        trust = float(fv.get("location_trust_score", 100.0) or 100.0)
+    except Exception:
+        trust = 100.0
+
+    if trust < 30.0:
+        penalty += 10.0
+    elif trust < 50.0:
+        penalty += 6.0
+
+    return penalty
 
 
 class ActivityLogger:
@@ -247,6 +290,9 @@ class ActivityLogger:
             arr = np.array([float(fv.get(f, 0.0)) for f in numeric_fields], dtype=np.float32)
             risk_score = self._engine.score(arr)
 
+        # Add deterministic policy penalties after model score.
+        risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
+
         productivity_score = _risk_to_productivity(
             risk_score,
             fv.get("idle_ratio", 0.0),
@@ -285,6 +331,21 @@ class ActivityLogger:
             "contributing_factors": factors,
             "label": label,
             "location_mode": fv.get("location_mode", "unknown"),
+            "city": fv.get("geo_city", "Unknown"),
+            "region": fv.get("geo_region", "Unknown"),
+            "country": fv.get("geo_country", "Unknown"),
+            "timezone": fv.get("geo_timezone", "Unknown"),
+            "isp": fv.get("geo_isp", "Unknown"),
+            "org": fv.get("geo_org", "Unknown"),
+            "asn": fv.get("geo_asn", "Unknown"),
+            "location_confidence": round(float(fv.get("geo_confidence", 0.0) or 0.0), 2),
+            "location_hint": fv.get("location_hint", "Unknown"),
+            "geolocation_deviation": round(float(fv.get("geolocation_deviation", 0.0) or 0.0), 3),
+            "inside_office_geofence": fv.get("inside_office_geofence"),
+            "vpn_proxy_detected": bool(fv.get("vpn_proxy_detected", False)),
+            "hosting_detected": bool(fv.get("hosting_detected", False)),
+            "location_trust_score": round(float(fv.get("location_trust_score", 0.0) or 0.0), 2),
+            "office_radius_km": round(float(fv.get("office_radius_km", 0.0) or 0.0), 2),
             "in_break": in_break,
             "break_type": break_type,
             "active_task_id": active_task_id,

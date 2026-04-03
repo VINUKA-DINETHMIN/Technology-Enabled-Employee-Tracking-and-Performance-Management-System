@@ -552,6 +552,18 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                     "label": 1,
                     "contributing_factors": 1,
                     "location_mode": 1,
+                    "location_hint": 1,
+                    "location_confidence": 1,
+                    "city": 1,
+                    "region": 1,
+                    "country": 1,
+                    "isp": 1,
+                    "geolocation_deviation": 1,
+                    "inside_office_geofence": 1,
+                    "vpn_proxy_detected": 1,
+                    "hosting_detected": 1,
+                    "location_trust_score": 1,
+                    "office_radius_km": 1,
                     "in_break": 1,
                     "break_type": 1,
                     "alert_triggered": 1,
@@ -652,6 +664,11 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             messagebox.showerror("Delete Excess Logs", f"Failed to delete logs: {exc}")
 
     def _show_activity_log_detail(self, log_doc: dict) -> None:
+        loc_hint = log_doc.get("location_hint") or "Unknown"
+        loc_conf = float(log_doc.get("location_confidence", 0.0) or 0.0)
+        geo_dev = float(log_doc.get("geolocation_deviation", 0.0) or 0.0)
+        in_fence = log_doc.get("inside_office_geofence")
+        trust = float(log_doc.get("location_trust_score", 0.0) or 0.0)
         lines = [
             f"Time: {_fmt_time(log_doc.get('timestamp', ''))}",
             f"Risk: {float(log_doc.get('composite_risk_score', 0.0) or 0.0):.2f}",
@@ -660,6 +677,14 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             f"Top App: {log_doc.get('top_app', '-')}",
             f"Idle Ratio: {float(log_doc.get('idle_ratio', 0.0) or 0.0):.3f}",
             f"Location: {log_doc.get('location_mode', 'unknown')}",
+            f"Estimated Place: {loc_hint}",
+            f"Location Confidence: {loc_conf:.2f}",
+            f"ISP: {log_doc.get('isp', 'Unknown')}",
+            f"Geo Deviation (KM): {geo_dev:.3f}",
+            f"Inside Office Geofence: {in_fence}",
+            f"VPN/Proxy Detected: {bool(log_doc.get('vpn_proxy_detected', False))}",
+            f"Hosting Network: {bool(log_doc.get('hosting_detected', False))}",
+            f"Location Trust: {trust:.2f}",
             f"In Break: {bool(log_doc.get('in_break', False))}",
             f"Break Type: {log_doc.get('break_type') or '-'}",
             f"Alert Triggered: {bool(log_doc.get('alert_triggered', False))}",
@@ -1140,6 +1165,12 @@ class AdminPanel(ctk.CTk):
             widget.pack_forget()
         self._tabs[tab_id].pack(fill="both", expand=True)
 
+        if tab_id == "settings":
+            try:
+                self._refresh_geo_policy_ui(status_msg="")
+            except Exception:
+                pass
+
         self._page_title.configure(text=tab_id.title())
         for tid, btn in self._nav_btns.items():
             if tid == tab_id:
@@ -1264,8 +1295,17 @@ class AdminPanel(ctk.CTk):
             is_online = (sess is not None)
             
             loc = "—"
-            if act and act.get("location_mode"):
-                loc = act.get("location_mode").title()
+            if act:
+                act_city = act.get("city")
+                act_country = act.get("country")
+                if act_city and act_city != "Unknown":
+                    loc = act_city
+                    if act_country and act_country != "Unknown":
+                        loc = f"{act_city}, {act_country}"
+                elif act.get("location_hint") and act.get("location_hint") != "Unknown":
+                    loc = str(act.get("location_hint"))
+                elif act.get("location_mode"):
+                    loc = act.get("location_mode").title()
             elif sess:
                 # If no activity log yet, pull from session
                 city = sess.get("city")
@@ -2213,14 +2253,218 @@ class AdminPanel(ctk.CTk):
     # Settings Tab
     # ------------------------------------------------------------------
 
+    def _default_geo_policy(self) -> dict:
+        return {
+            "office": {
+                "city": "",
+                "region": "",
+                "country": "",
+                "isp": "",
+                "ip": "",
+                "lat": None,
+                "lon": None,
+                "radius_km": 25.0,
+                "location_hint": "",
+            },
+            "risk": {
+                "strict_vpn_proxy": True,
+                "outside_penalty": 20.0,
+                "vpn_proxy_penalty": 25.0,
+                "hosting_penalty": 20.0,
+            },
+        }
+
+    def _load_geo_policy(self) -> dict:
+        policy = self._default_geo_policy()
+        if not self._db or not self._db.is_connected:
+            return policy
+        try:
+            col = self._db.get_collection("system_settings")
+            if col is None:
+                return policy
+            doc = col.find_one({"_id": "geo_policy"}) or {}
+            office = doc.get("office") or {}
+            risk = doc.get("risk") or {}
+            policy["office"].update(office)
+            policy["risk"].update(risk)
+        except Exception:
+            pass
+        return policy
+
+    def _save_geo_policy(self, policy: dict) -> None:
+        if not self._db or not self._db.is_connected:
+            raise RuntimeError("Database is offline")
+        col = self._db.get_collection("system_settings")
+        if col is None:
+            raise RuntimeError("system_settings collection unavailable")
+        payload = {
+            **policy,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": "admin_panel",
+        }
+        col.update_one({"_id": "geo_policy"}, {"$set": payload}, upsert=True)
+
+    def _refresh_geo_policy_ui(self, status_msg: str = "") -> None:
+        policy = self._load_geo_policy()
+        office = policy.get("office", {})
+        risk = policy.get("risk", {})
+
+        self._geo_city_var.set(str(office.get("city") or ""))
+        self._geo_region_var.set(str(office.get("region") or ""))
+        self._geo_country_var.set(str(office.get("country") or ""))
+        self._geo_isp_var.set(str(office.get("isp") or ""))
+        self._geo_ip_var.set(str(office.get("ip") or ""))
+        self._geo_hint_var.set(str(office.get("location_hint") or ""))
+        self._geo_lat_var.set("" if office.get("lat") is None else str(office.get("lat")))
+        self._geo_lon_var.set("" if office.get("lon") is None else str(office.get("lon")))
+        self._geo_radius_var.set(str(office.get("radius_km", 25.0) or 25.0))
+
+        self._geo_strict_var.set(bool(risk.get("strict_vpn_proxy", True)))
+        self._geo_outside_penalty_var.set(str(risk.get("outside_penalty", 20.0) or 20.0))
+        self._geo_vpn_penalty_var.set(str(risk.get("vpn_proxy_penalty", 25.0) or 25.0))
+        self._geo_hosting_penalty_var.set(str(risk.get("hosting_penalty", 20.0) or 20.0))
+
+        if status_msg and hasattr(self, "_geo_status_lbl"):
+            self._geo_status_lbl.configure(text=status_msg, text_color=C_GREEN)
+
+    def _capture_office_geofence(self) -> None:
+        if hasattr(self, "_geo_status_lbl"):
+            self._geo_status_lbl.configure(text="Detecting current network location...", text_color=C_AMBER)
+
+        def worker():
+            try:
+                from C3_activity_monitoring.src.geo_context import get_geo_context
+                geo = get_geo_context()
+                lat = geo.get("lat")
+                lon = geo.get("lon")
+                if lat is None or lon is None:
+                    self.after(0, lambda: self._geo_status_lbl.configure(text="Could not detect lat/lon from current network.", text_color=C_RED))
+                    return
+
+                def apply_values():
+                    self._geo_city_var.set(str(geo.get("city") or ""))
+                    self._geo_region_var.set(str(geo.get("region") or ""))
+                    self._geo_country_var.set(str(geo.get("country") or ""))
+                    self._geo_isp_var.set(str(geo.get("isp") or ""))
+                    self._geo_ip_var.set(str(geo.get("ip") or ""))
+                    self._geo_hint_var.set(str(geo.get("location_hint") or ""))
+                    self._geo_lat_var.set(str(lat))
+                    self._geo_lon_var.set(str(lon))
+                    self._geo_status_lbl.configure(text="Office geofence center captured from current network. Click Save.", text_color=C_GREEN)
+
+                self.after(0, apply_values)
+            except Exception as exc:
+                self.after(0, lambda: self._geo_status_lbl.configure(text=f"Geo capture failed: {exc}", text_color=C_RED))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _save_geo_policy_from_form(self) -> None:
+        try:
+            lat = float(self._geo_lat_var.get().strip())
+            lon = float(self._geo_lon_var.get().strip())
+            radius_km = float(self._geo_radius_var.get().strip())
+            outside_penalty = float(self._geo_outside_penalty_var.get().strip())
+            vpn_penalty = float(self._geo_vpn_penalty_var.get().strip())
+            hosting_penalty = float(self._geo_hosting_penalty_var.get().strip())
+        except Exception:
+            messagebox.showerror("Invalid Geo Policy", "Please enter valid numeric values for lat/lon/radius and penalties.")
+            return
+
+        policy = {
+            "office": {
+                "city": self._geo_city_var.get().strip(),
+                "region": self._geo_region_var.get().strip(),
+                "country": self._geo_country_var.get().strip(),
+                "isp": self._geo_isp_var.get().strip(),
+                "ip": self._geo_ip_var.get().strip(),
+                "location_hint": self._geo_hint_var.get().strip(),
+                "lat": lat,
+                "lon": lon,
+                "radius_km": max(0.5, radius_km),
+            },
+            "risk": {
+                "strict_vpn_proxy": bool(self._geo_strict_var.get()),
+                "outside_penalty": max(0.0, outside_penalty),
+                "vpn_proxy_penalty": max(0.0, vpn_penalty),
+                "hosting_penalty": max(0.0, hosting_penalty),
+            },
+        }
+
+        try:
+            self._save_geo_policy(policy)
+            self._refresh_geo_policy_ui(status_msg="Geo-fence policy saved.")
+        except Exception as exc:
+            messagebox.showerror("Save Failed", f"Could not save geo policy: {exc}")
+
     def _build_settings_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self._tab_frame, fg_color=C_BG, corner_radius=0)
-        form = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=14)
-        form.pack(padx=40, pady=40, fill="x")
-        ctk.CTkLabel(form, text="Application Settings", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=20, pady=(16, 8))
-        ctk.CTkLabel(form, text=f"App Name:   {settings.APP_NAME}", text_color=C_MUTED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20)
-        ctk.CTkLabel(form, text=f"Version:    {settings.VERSION}", text_color=C_MUTED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20)
-        ctk.CTkLabel(form, text=f"DB Status:  {'Connected' if self._db and self._db.is_connected else 'Offline'}", text_color=C_GREEN if (self._db and self._db.is_connected) else C_RED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20, pady=(0, 16))
+        wrap = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=24, pady=20)
+
+        app_card = ctk.CTkFrame(wrap, fg_color=C_CARD, corner_radius=14)
+        app_card.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkLabel(app_card, text="Application Settings", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=20, pady=(16, 8))
+        ctk.CTkLabel(app_card, text=f"App Name:   {settings.APP_NAME}", text_color=C_MUTED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20)
+        ctk.CTkLabel(app_card, text=f"Version:    {settings.VERSION}", text_color=C_MUTED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20)
+        ctk.CTkLabel(app_card, text=f"DB Status:  {'Connected' if self._db and self._db.is_connected else 'Offline'}", text_color=C_GREEN if (self._db and self._db.is_connected) else C_RED, font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20, pady=(0, 16))
+
+        geo_card = ctk.CTkFrame(wrap, fg_color=C_CARD, corner_radius=14)
+        geo_card.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkLabel(geo_card, text="Office Geo-Fence Policy", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=20, pady=(16, 6))
+        ctk.CTkLabel(geo_card, text="Set office geo center from current admin network, then save radius and risk penalties.", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20, pady=(0, 10))
+
+        self._geo_city_var = tk.StringVar()
+        self._geo_region_var = tk.StringVar()
+        self._geo_country_var = tk.StringVar()
+        self._geo_isp_var = tk.StringVar()
+        self._geo_ip_var = tk.StringVar()
+        self._geo_hint_var = tk.StringVar()
+        self._geo_lat_var = tk.StringVar()
+        self._geo_lon_var = tk.StringVar()
+        self._geo_radius_var = tk.StringVar(value="25")
+        self._geo_strict_var = tk.BooleanVar(value=True)
+        self._geo_outside_penalty_var = tk.StringVar(value="20")
+        self._geo_vpn_penalty_var = tk.StringVar(value="25")
+        self._geo_hosting_penalty_var = tk.StringVar(value="20")
+
+        grid = ctk.CTkFrame(geo_card, fg_color="transparent")
+        grid.pack(fill="x", padx=20, pady=(0, 8))
+        grid.grid_columnconfigure((1, 3), weight=1)
+
+        def _row(r: int, side: str, label: str, var: tk.Variable):
+            is_left = side == "left"
+            label_col = 0 if is_left else 2
+            value_col = 1 if is_left else 3
+            ctk.CTkLabel(grid, text=label, text_color=C_MUTED, font=ctk.CTkFont(size=11)).grid(row=r, column=label_col, sticky="w", padx=(0, 8), pady=6)
+            ctk.CTkEntry(grid, textvariable=var, fg_color=C_SIDEBAR, border_color=C_BORDER).grid(row=r, column=value_col, sticky="ew", padx=(0, 14), pady=6)
+
+        _row(0, "left", "City", self._geo_city_var)
+        _row(0, "right", "Region", self._geo_region_var)
+        _row(1, "left", "Country", self._geo_country_var)
+        _row(1, "right", "ISP", self._geo_isp_var)
+        _row(2, "left", "Public IP", self._geo_ip_var)
+        _row(2, "right", "Location Hint", self._geo_hint_var)
+        _row(3, "left", "Latitude", self._geo_lat_var)
+        _row(3, "right", "Longitude", self._geo_lon_var)
+        _row(4, "left", "Radius (KM)", self._geo_radius_var)
+        _row(4, "right", "Outside Penalty", self._geo_outside_penalty_var)
+        _row(5, "left", "VPN/Proxy Penalty", self._geo_vpn_penalty_var)
+        _row(5, "right", "Hosting Penalty", self._geo_hosting_penalty_var)
+
+        strict_row = ctk.CTkFrame(geo_card, fg_color="transparent")
+        strict_row.pack(fill="x", padx=20, pady=(2, 8))
+        ctk.CTkSwitch(strict_row, text="Strict VPN/Proxy Check", variable=self._geo_strict_var, onvalue=True, offvalue=False).pack(side="left")
+
+        btn_row = ctk.CTkFrame(geo_card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(4, 6))
+        ctk.CTkButton(btn_row, text="Capture Office From Current Network", fg_color=C_BLUE, hover_color="#2563eb", command=self._capture_office_geofence).pack(side="left")
+        ctk.CTkButton(btn_row, text="Reload", width=90, fg_color=C_BORDER, hover_color=C_BLUE, command=lambda: self._refresh_geo_policy_ui(status_msg="Reloaded."),).pack(side="left", padx=8)
+        ctk.CTkButton(btn_row, text="Save Geo Policy", fg_color=C_TEAL, hover_color=C_TEAL_D, command=self._save_geo_policy_from_form).pack(side="right")
+
+        self._geo_status_lbl = ctk.CTkLabel(geo_card, text="", text_color=C_MUTED, font=ctk.CTkFont(size=11))
+        self._geo_status_lbl.pack(anchor="w", padx=20, pady=(0, 14))
+
+        self._refresh_geo_policy_ui(status_msg="")
         return frame
 
     # ------------------------------------------------------------------

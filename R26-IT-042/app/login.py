@@ -823,14 +823,92 @@ class LoginWindow(ctk.CTk):
             location_mode = "unknown"
             geo_city = "Unknown"
             geo_country = "Unknown"
+            geo_region = "Unknown"
+            geo_ip = "unknown"
+            geo_lat = None
+            geo_lon = None
+            geo_timezone = "Unknown"
+            geo_isp = "Unknown"
+            geo_org = "Unknown"
+            geo_asn = "Unknown"
+            geo_confidence = 0.0
+            geo_hint = "Unknown"
+            vpn_proxy_detected = False
+            hosting_detected = False
+            geolocation_deviation = 0.0
+            inside_office_geofence = None
+            office_radius_km = 25.0
+            location_trust_score = 0.0
             wifi_ssid_hash = ""
             device_fingerprint = ""
             try:
-                from C3_activity_monitoring.src.geo_context import get_geo_context
+                from C3_activity_monitoring.src.geo_context import get_geo_context, haversine_km
                 geo = get_geo_context()
                 geo_city = geo.get("city") or "Unknown"
                 geo_country = geo.get("country") or "Unknown"
-                location_mode = "office" if geo.get("city") else "unknown"
+                geo_region = geo.get("region") or "Unknown"
+                geo_ip = geo.get("ip") or "unknown"
+                geo_lat = geo.get("lat")
+                geo_lon = geo.get("lon")
+                geo_timezone = geo.get("timezone") or "Unknown"
+                geo_isp = geo.get("isp") or "Unknown"
+                geo_org = geo.get("org") or "Unknown"
+                geo_asn = geo.get("asn") or "Unknown"
+                geo_confidence = float(geo.get("confidence") or 0.0)
+                geo_hint = geo.get("location_hint") or "Unknown"
+                vpn_proxy_detected = bool(geo.get("is_proxy", False))
+                hosting_detected = bool(geo.get("is_hosting", False))
+
+                # Keep these core location labels for compatibility.
+                if geo_city != "Unknown":
+                    work_location = str(self._current_employee.get("work_location") or "").strip().lower()
+                    if work_location in {"home", "hybrid"}:
+                        location_mode = work_location
+                    else:
+                        location_mode = "office"
+
+                # Compare employee estimated location with configured office geofence.
+                policy_doc = None
+                try:
+                    settings_col = self._db.get_collection("system_settings")
+                    if settings_col is not None:
+                        policy_doc = settings_col.find_one({"_id": "geo_policy"}) or {}
+                except Exception:
+                    policy_doc = {}
+
+                office = (policy_doc or {}).get("office") or {}
+                risk_cfg = (policy_doc or {}).get("risk") or {}
+
+                try:
+                    office_radius_km = float(office.get("radius_km", 25.0) or 25.0)
+                except Exception:
+                    office_radius_km = 25.0
+
+                distance_km = haversine_km(
+                    geo_lat,
+                    geo_lon,
+                    office.get("lat"),
+                    office.get("lon"),
+                )
+                if distance_km is not None:
+                    geolocation_deviation = float(distance_km)
+                    inside_office_geofence = geolocation_deviation <= office_radius_km
+
+                strict_vpn_proxy = bool(risk_cfg.get("strict_vpn_proxy", True))
+                outside_penalty = float(risk_cfg.get("outside_penalty", 20.0) or 20.0)
+                vpn_penalty = float(risk_cfg.get("vpn_proxy_penalty", 25.0) or 25.0)
+                hosting_penalty = float(risk_cfg.get("hosting_penalty", 20.0) or 20.0)
+
+                trust = float(geo_confidence) * 100.0
+                if inside_office_geofence is False:
+                    trust -= outside_penalty
+                if vpn_proxy_detected:
+                    trust -= vpn_penalty if strict_vpn_proxy else (vpn_penalty * 0.5)
+                if hosting_detected:
+                    trust -= hosting_penalty
+                if geo_city == "Unknown":
+                    trust -= 15.0
+                location_trust_score = round(max(0.0, min(trust, 100.0)), 2)
             except Exception:
                 pass
 
@@ -842,12 +920,51 @@ class LoginWindow(ctk.CTk):
                 "employee_id": emp_id,
                 "login_at": datetime.now(timezone.utc).isoformat(),
                 "location_mode": location_mode,
+                "city": geo_city,
+                "country": geo_country,
+                "region": geo_region,
+                "ip": geo_ip,
+                "lat": geo_lat,
+                "lon": geo_lon,
+                "timezone": geo_timezone,
+                "isp": geo_isp,
+                "org": geo_org,
+                "asn": geo_asn,
+                "location_confidence": geo_confidence,
+                "location_hint": geo_hint,
+                "vpn_proxy_detected": vpn_proxy_detected,
+                "hosting_detected": hosting_detected,
+                "geolocation_deviation": geolocation_deviation,
+                "inside_office_geofence": inside_office_geofence,
+                "office_radius_km": office_radius_km,
+                "location_trust_score": location_trust_score,
                 "wifi_ssid_hash": wifi_ssid_hash,
                 "device_fingerprint": device_fingerprint,
                 "face_liveness_score": liveness_score,
                 "mfa_verified": True,
                 "status": "active",
             }
+
+            # Keep resolved geo data on employee payload for main.py callback.
+            self._current_employee["location_mode"] = location_mode
+            self._current_employee["geo_city"] = geo_city
+            self._current_employee["geo_country"] = geo_country
+            self._current_employee["geo_region"] = geo_region
+            self._current_employee["geo_ip"] = geo_ip
+            self._current_employee["geo_lat"] = geo_lat
+            self._current_employee["geo_lon"] = geo_lon
+            self._current_employee["geo_timezone"] = geo_timezone
+            self._current_employee["geo_isp"] = geo_isp
+            self._current_employee["geo_org"] = geo_org
+            self._current_employee["geo_asn"] = geo_asn
+            self._current_employee["geo_confidence"] = geo_confidence
+            self._current_employee["geo_hint"] = geo_hint
+            self._current_employee["vpn_proxy_detected"] = vpn_proxy_detected
+            self._current_employee["hosting_detected"] = hosting_detected
+            self._current_employee["geolocation_deviation"] = geolocation_deviation
+            self._current_employee["inside_office_geofence"] = inside_office_geofence
+            self._current_employee["office_radius_km"] = office_radius_km
+            self._current_employee["location_trust_score"] = location_trust_score
 
             col = self._db.get_collection("sessions")
             if col is not None:

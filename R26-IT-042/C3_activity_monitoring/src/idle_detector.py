@@ -77,6 +77,8 @@ class IdleDetector:
         # List of (period_start, period_end) tuples of idle periods within window
         self._idle_periods: list[tuple[float, float]] = []
         self._idle_start: Optional[float] = None
+        # Raw activity event timestamps used for window idle-ratio estimation.
+        self._activity_events: list[float] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,6 +93,11 @@ class IdleDetector:
         with self._lock:
             was_idle = self._is_idle_state
             self._last_activity = now
+            self._activity_events.append(now)
+
+            # Keep a small rolling buffer of activity points.
+            event_cutoff = now - self._window_sec * 3
+            self._activity_events = [t for t in self._activity_events if t >= event_cutoff]
 
             if was_idle:
                 self._is_idle_state = False
@@ -123,20 +130,20 @@ class IdleDetector:
         cutoff = now - self._window_sec
 
         with self._lock:
-            idle_sec = 0.0
-            for start, end in self._idle_periods:
-                if end < cutoff:
-                    continue
-                clamped_start = max(start, cutoff)
-                clamped_end = min(end, now)
-                idle_sec += max(clamped_end - clamped_start, 0.0)
+            recent_events = [t for t in self._activity_events if t >= cutoff]
 
-            # Include current ongoing idle period
-            if self._is_idle_state and self._idle_start is not None:
-                clamped_start = max(self._idle_start, cutoff)
-                idle_sec += max(now - clamped_start, 0.0)
+        # Estimate idle ratio as the share of 1s buckets with no activity.
+        # This is independent of the 120s idle-alert threshold and gives
+        # meaningful ratios for 60s activity log windows.
+        idle_sec = 0.0
+        for sec_start in range(int(self._window_sec)):
+            sec_begin = cutoff + sec_start
+            sec_end = sec_begin + 1.0
+            has_activity = any(sec_begin <= t < sec_end for t in recent_events)
+            if not has_activity:
+                idle_sec += 1.0
 
-        return min(idle_sec / self._window_sec, 1.0)
+        return min(max(idle_sec / self._window_sec, 0.0), 1.0)
 
     @property
     def idle_seconds(self) -> float:

@@ -94,6 +94,9 @@ class Application:
         self._liveness_score = 1.0
         self._cam_streaming = False
         self._screen_streaming = False
+        self._location_mode = "unknown"
+        self._current_city = "Unknown"
+        self._location_context: dict = {}
 
     # ------------------------------------------------------------------
     # Startup
@@ -217,6 +220,25 @@ class Application:
         self._user_id = employee.get("employee_id", "?")
         self._session_id = session_id
         self._liveness_score = employee.get("face_liveness_score", 1.0)
+        self._location_mode = str(employee.get("location_mode") or "unknown").lower()
+        self._current_city = employee.get("geo_city") or "Unknown"
+        self._location_context = {
+            "city": employee.get("geo_city") or "Unknown",
+            "region": employee.get("geo_region") or "Unknown",
+            "country": employee.get("geo_country") or "Unknown",
+            "timezone": employee.get("geo_timezone") or "Unknown",
+            "isp": employee.get("geo_isp") or "Unknown",
+            "org": employee.get("geo_org") or "Unknown",
+            "asn": employee.get("geo_asn") or "Unknown",
+            "confidence": float(employee.get("geo_confidence") or 0.0),
+            "location_hint": employee.get("geo_hint") or "Unknown",
+            "vpn_proxy_detected": bool(employee.get("vpn_proxy_detected", False)),
+            "hosting_detected": bool(employee.get("hosting_detected", False)),
+            "geolocation_deviation": float(employee.get("geolocation_deviation") or 0.0),
+            "inside_office_geofence": employee.get("inside_office_geofence"),
+            "office_radius_km": float(employee.get("office_radius_km") or 0.0),
+            "location_trust_score": float(employee.get("location_trust_score") or 0.0),
+        }
         log.info("Login success: %s session=%s liveness=%.2f", self._user_id, session_id, self._liveness_score)
 
         if self._secure_logger:
@@ -362,7 +384,8 @@ class Application:
                 alert_sender=self._alert_sender,
                 shutdown_event=self._shutdown_event,
                 session_id=self._session_id,
-                location_mode="unknown",
+                location_mode=self._location_mode,
+                location_context=self._location_context,
                 wifi_ssid_match=False,
                 face_liveness_score=self._liveness_score,
             )
