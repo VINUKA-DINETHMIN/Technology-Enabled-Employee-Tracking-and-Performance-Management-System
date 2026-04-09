@@ -2243,6 +2243,18 @@ class AdminPanel(ctk.CTk):
         s = seconds % 60
         return f"{h:02d}:{m:02d}:{s:02d}"
 
+    @staticmethod
+    def _parse_date_hms(date_str: Optional[str], time_str: Optional[str]) -> Optional[datetime]:
+        """Parse attendance date + HH:MM:SS into datetime."""
+        d = str(date_str or "").strip()
+        t = str(time_str or "").strip()
+        if not d or not t or t == "—":
+            return None
+        try:
+            return datetime.strptime(f"{d} {t}", "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
     def _derive_attendance_status(self, signin: Optional[str], signout: Optional[str], existing_status: Optional[str]) -> str:
         """Return one of: On Time / Late / Early Departure / Overtime."""
         base_status = str(existing_status or "").strip()
@@ -2298,8 +2310,11 @@ class AdminPanel(ctk.CTk):
         # Table header
         hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
         hdr.pack(fill="x", padx=20, pady=(0, 2))
-        for col in ["Name", "ID", "Date", "Sign-in", "Sign-out", "Active Duration", "Idle Duration", "Status"]:
-            ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(side="left", padx=12, pady=8, expand=True)
+        for col, w in [
+            ("Name", 210), ("ID", 90), ("Date", 110), ("Sign-in", 95), ("Sign-out", 95),
+            ("Active Duration", 130), ("Idle Duration", 120), ("Status", 100),
+        ]:
+            ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, width=w, anchor="w").pack(side="left", padx=4, pady=8)
 
         self._att_list_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._att_list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 16))
@@ -2416,18 +2431,22 @@ class AdminPanel(ctk.CTk):
             eid = str(d.get("employee_id", "")).strip()
             sign_in = d.get("signin") or "—"
             sign_out = d.get("signout") or "—"
+            row_date = str(d.get("date", "")).strip()
 
             total_seconds = self._seconds_from_hms(d.get("duration"))
             if total_seconds <= 0 and sign_in not in (None, "—"):
                 try:
-                    s_dt = datetime.strptime(sign_in, "%H:%M:%S")
+                    s_dt = self._parse_date_hms(row_date, sign_in)
                     if sign_out not in (None, "—"):
-                        e_dt = datetime.strptime(sign_out, "%H:%M:%S")
+                        e_dt = self._parse_date_hms(row_date, sign_out)
+                        if s_dt is not None and e_dt is not None and e_dt < s_dt:
+                            # Handle midnight crossover.
+                            e_dt = e_dt + timedelta(days=1)
                     elif eid in active_sessions and d.get("date") == today_str:
                         e_dt = datetime.now().replace(microsecond=0)
                     else:
                         e_dt = None
-                    if e_dt is not None:
+                    if s_dt is not None and e_dt is not None:
                         total_seconds = max(0, int((e_dt - s_dt).total_seconds()))
                 except Exception:
                     total_seconds = 0
@@ -2452,17 +2471,17 @@ class AdminPanel(ctk.CTk):
             row.pack(fill="x", pady=2)
             row.pack_propagate(False)
             row_vals = [
-                d.get("full_name", "?"),
-                eid,
-                d.get("date", ""),
-                sign_in,
-                sign_out,
-                self._fmt_hms(active_seconds),
-                self._fmt_hms(idle_seconds),
+                (_clip_text(d.get("full_name", "?"), 28), 210, C_TEXT),
+                (eid, 90, C_TEXT),
+                (row_date, 110, C_TEXT),
+                (sign_in, 95, C_TEXT),
+                (sign_out, 95, C_TEXT),
+                (self._fmt_hms(active_seconds), 130, C_TEXT),
+                (self._fmt_hms(idle_seconds), 120, C_TEXT),
+                (status, 100, s_color),
             ]
-            for val in row_vals:
-                ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=12, expand=True)
-            ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+            for txt, width, color in row_vals:
+                ctk.CTkLabel(row, text=str(txt), text_color=color, font=ctk.CTkFont(size=11), width=width, anchor="w").pack(side="left", padx=4)
 
     # ------------------------------------------------------------------
     # Settings Tab
