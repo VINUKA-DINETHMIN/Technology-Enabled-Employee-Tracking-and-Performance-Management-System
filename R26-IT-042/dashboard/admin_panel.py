@@ -110,13 +110,50 @@ def _play_alert_sound() -> None:
         pass
 
 
+def _parse_iso_timestamp(ts_str: str) -> Optional[datetime]:
+    """Parse an ISO timestamp string and return a timezone-aware local datetime."""
+    if not ts_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone()
+    except Exception:
+        return None
+
+
+def _clip_text(text: str, max_chars: int) -> str:
+    """Clip long values to keep table columns visually aligned."""
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return value
+    return value[: max(0, max_chars - 3)] + "..."
+
+
 def _fmt_time(ts_str: str) -> str:
     """Format ISO timestamp to HH:MM string."""
-    try:
-        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    dt = _parse_iso_timestamp(ts_str)
+    if dt is not None:
         return dt.strftime("%H:%M")
-    except Exception:
-        return ts_str[:5] if ts_str else "--"
+    return ts_str[:5] if ts_str else "--"
+
+
+def _fmt_last_seen(ts_str: str) -> str:
+    """Format last-seen text similar to chat apps (today/yesterday/date + time)."""
+    dt = _parse_iso_timestamp(ts_str)
+    if dt is None:
+        return "—"
+
+    now_local = datetime.now(dt.tzinfo)
+    day_diff = (now_local.date() - dt.date()).days
+    time_text = dt.strftime("%I:%M %p").lstrip("0")
+
+    if day_diff == 0:
+        return f"Today at {time_text}"
+    if day_diff == 1:
+        return f"Yesterday at {time_text}"
+    return f"{dt.strftime('%d %b %Y')} at {time_text}"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1206,7 +1243,7 @@ class AdminPanel(ctk.CTk):
         # Column headers
         hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
         hdr.pack(fill="x", padx=20)
-        for col, w in [("Employee", 180), ("ID", 90), ("Risk", 80), ("Location", 90), ("Status", 90), ("Last Seen", 90), ("", 80)]:
+        for col, w in [("Employee", 190), ("ID", 90), ("Risk", 70), ("Location", 230), ("Status", 120), ("Last Seen", 220), ("", 90)]:
             ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, width=w, anchor="w").pack(side="left", padx=4)
 
         self._emp_list_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG, corner_radius=0)
@@ -1311,8 +1348,21 @@ class AdminPanel(ctk.CTk):
                 city = sess.get("city")
                 loc = city if (city and city != "Unknown") else (sess.get("location_mode") or "—").title()
             
-            last_seen = _fmt_time(act.get("timestamp", "")) if act else "—"
+            act_ts = str(act.get("timestamp") or "").strip() if act else ""
+            sess_ts = str(sess.get("login_at") or "").strip() if sess else ""
+
+            # Prefer the most recent known timestamp across activity and session login.
+            chosen_ts = act_ts or sess_ts
+            if act_ts and sess_ts:
+                act_dt = _parse_iso_timestamp(act_ts)
+                sess_dt = _parse_iso_timestamp(sess_ts)
+                if sess_dt is not None and (act_dt is None or sess_dt > act_dt):
+                    chosen_ts = sess_ts
+
+            last_seen = _fmt_last_seen(chosen_ts) if chosen_ts else "—"
             name = emp.get("full_name", eid)
+            display_name = _clip_text(name, 26)
+            display_loc = _clip_text(loc, 30)
 
             status_text = status
             status_color = C_TEXT
@@ -1334,9 +1384,9 @@ class AdminPanel(ctk.CTk):
             if eid in self._emp_rows:
                 # Update
                 labels = self._emp_rows[eid]["labels"]
-                labels["name"].configure(text=name)
+                labels["name"].configure(text=display_name)
                 labels["risk"].configure(text=f"{risk:.0f}", text_color=risk_color)
-                labels["loc"].configure(text=loc)
+                labels["loc"].configure(text=display_loc)
                 labels["status"].configure(text=status_text, text_color=status_color)
                 labels["seen"].configure(text=last_seen)
             else:
@@ -1345,17 +1395,17 @@ class AdminPanel(ctk.CTk):
                 row.pack(fill="x", pady=3)
                 row.pack_propagate(False)
 
-                l_name = ctk.CTkLabel(row, text=name, text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold"), width=180, anchor="w")
+                l_name = ctk.CTkLabel(row, text=display_name, text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold"), width=190, anchor="w")
                 l_name.pack(side="left", padx=8)
                 l_id = ctk.CTkLabel(row, text=eid, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
                 l_id.pack(side="left")
-                l_risk = ctk.CTkLabel(row, text=f"{risk:.0f}", text_color=risk_color, font=ctk.CTkFont(size=12, weight="bold"), width=80, anchor="w")
+                l_risk = ctk.CTkLabel(row, text=f"{risk:.0f}", text_color=risk_color, font=ctk.CTkFont(size=12, weight="bold"), width=70, anchor="w")
                 l_risk.pack(side="left")
-                l_loc = ctk.CTkLabel(row, text=loc, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_loc = ctk.CTkLabel(row, text=display_loc, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=230, anchor="w")
                 l_loc.pack(side="left")
-                l_status = ctk.CTkLabel(row, text=status_text, text_color=status_color, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_status = ctk.CTkLabel(row, text=status_text, text_color=status_color, font=ctk.CTkFont(size=11), width=120, anchor="w")
                 l_status.pack(side="left")
-                l_seen = ctk.CTkLabel(row, text=last_seen, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=90, anchor="w")
+                l_seen = ctk.CTkLabel(row, text=last_seen, text_color=C_MUTED, font=ctk.CTkFont(size=11), width=220, anchor="w")
                 l_seen.pack(side="left")
 
                 ctk.CTkButton(
