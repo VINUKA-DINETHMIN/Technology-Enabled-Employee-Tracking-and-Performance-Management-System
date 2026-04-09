@@ -835,8 +835,10 @@ class LoginWindow(ctk.CTk):
             geo_hint = "Unknown"
             vpn_proxy_detected = False
             hosting_detected = False
-            geolocation_deviation = 0.0
+            geolocation_deviation = None
             inside_office_geofence = None
+            geolocation_resolved = False
+            geo_source = "unknown"
             office_radius_km = 25.0
             location_trust_score = 0.0
             wifi_ssid_hash = ""
@@ -856,16 +858,11 @@ class LoginWindow(ctk.CTk):
                 geo_asn = geo.get("asn") or "Unknown"
                 geo_confidence = float(geo.get("confidence") or 0.0)
                 geo_hint = geo.get("location_hint") or "Unknown"
+                geo_source = str(geo.get("source") or "unknown")
                 vpn_proxy_detected = bool(geo.get("is_proxy", False))
                 hosting_detected = bool(geo.get("is_hosting", False))
 
-                # Keep these core location labels for compatibility.
-                if geo_city != "Unknown":
-                    work_location = str(self._current_employee.get("work_location") or "").strip().lower()
-                    if work_location in {"home", "hybrid"}:
-                        location_mode = work_location
-                    else:
-                        location_mode = "office"
+                work_location = str(self._current_employee.get("work_location") or "").strip().lower()
 
                 # Compare employee estimated location with configured office geofence.
                 policy_doc = None
@@ -893,6 +890,21 @@ class LoginWindow(ctk.CTk):
                 if distance_km is not None:
                     geolocation_deviation = float(distance_km)
                     inside_office_geofence = geolocation_deviation <= office_radius_km
+                    geolocation_resolved = True
+
+                # Set location mode based on resolved geofence facts first.
+                if inside_office_geofence is True:
+                    location_mode = "office"
+                elif inside_office_geofence is False:
+                    if work_location in {"home", "hybrid"}:
+                        location_mode = work_location
+                    else:
+                        location_mode = "outside"
+                else:
+                    if work_location in {"office", "home", "hybrid"}:
+                        location_mode = work_location
+                    else:
+                        location_mode = "unknown"
 
                 strict_vpn_proxy = bool(risk_cfg.get("strict_vpn_proxy", True))
                 outside_penalty = float(risk_cfg.get("outside_penalty", 20.0) or 20.0)
@@ -934,8 +946,10 @@ class LoginWindow(ctk.CTk):
                 "location_hint": geo_hint,
                 "vpn_proxy_detected": vpn_proxy_detected,
                 "hosting_detected": hosting_detected,
+                "geo_source": geo_source,
                 "geolocation_deviation": geolocation_deviation,
                 "inside_office_geofence": inside_office_geofence,
+                "geolocation_resolved": geolocation_resolved,
                 "office_radius_km": office_radius_km,
                 "location_trust_score": location_trust_score,
                 "wifi_ssid_hash": wifi_ssid_hash,
@@ -959,10 +973,12 @@ class LoginWindow(ctk.CTk):
             self._current_employee["geo_asn"] = geo_asn
             self._current_employee["geo_confidence"] = geo_confidence
             self._current_employee["geo_hint"] = geo_hint
+            self._current_employee["geo_source"] = geo_source
             self._current_employee["vpn_proxy_detected"] = vpn_proxy_detected
             self._current_employee["hosting_detected"] = hosting_detected
             self._current_employee["geolocation_deviation"] = geolocation_deviation
             self._current_employee["inside_office_geofence"] = inside_office_geofence
+            self._current_employee["geolocation_resolved"] = geolocation_resolved
             self._current_employee["office_radius_km"] = office_radius_km
             self._current_employee["location_trust_score"] = location_trust_score
 

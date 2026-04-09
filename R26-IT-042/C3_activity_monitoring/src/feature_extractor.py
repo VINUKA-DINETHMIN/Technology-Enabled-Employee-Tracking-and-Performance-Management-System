@@ -137,15 +137,23 @@ class FeatureExtractor:
             self._known_fp is None or self._device_fp == self._known_fp
         )
 
+        geo_dev: Optional[float] = None
         try:
-            geo_dev = float(geolocation_deviation or 0.0)
+            if geolocation_deviation not in (None, ""):
+                geo_dev = float(geolocation_deviation)
         except Exception:
-            geo_dev = 0.0
-        if geo_dev == 0.0:
+            geo_dev = None
+
+        if geo_dev is None:
             try:
-                geo_dev = float(self._location_context.get("geolocation_deviation", 0.0) or 0.0)
+                ctx_geo_dev = self._location_context.get("geolocation_deviation")
+                if ctx_geo_dev not in (None, ""):
+                    geo_dev = float(ctx_geo_dev)
             except Exception:
-                geo_dev = 0.0
+                geo_dev = None
+
+        if geo_dev is None:
+            geo_dev = 0.0
 
         feature_vector = {
             # ── Metadata ───────────────────────────────────────────
@@ -160,9 +168,13 @@ class FeatureExtractor:
             "geo_isp": self._location_context.get("isp", "Unknown"),
             "geo_org": self._location_context.get("org", "Unknown"),
             "geo_asn": self._location_context.get("asn", "Unknown"),
+            "geo_source": self._location_context.get("geo_source", "unknown"),
+            "geo_lat": self._location_context.get("lat"),
+            "geo_lon": self._location_context.get("lon"),
             "geo_confidence": float(self._location_context.get("confidence", 0.0) or 0.0),
             "location_hint": self._location_context.get("location_hint", "Unknown"),
             "inside_office_geofence": self._location_context.get("inside_office_geofence"),
+            "geolocation_resolved": bool(self._location_context.get("geolocation_resolved", False)),
             "vpn_proxy_detected": bool(self._location_context.get("vpn_proxy_detected", False)),
             "hosting_detected": bool(self._location_context.get("hosting_detected", False)),
             "location_trust_score": float(self._location_context.get("location_trust_score", 0.0) or 0.0),
