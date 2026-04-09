@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 _MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 _MODEL_PATH = _MODELS_DIR / "user_behavioral_model.pkl"
 _SCALER_PATH = _MODELS_DIR / "feature_scaler.pkl"
+_AE_MODEL_PATH = _MODELS_DIR / "ae_model.pkl"
+_AE_SCALER_PATH = _MODELS_DIR / "ae_scaler.pkl"
+_AE_THRESHOLD_PATH = _MODELS_DIR / "ae_threshold.pkl"
+_ENSEMBLE_CONFIG_PATH = _MODELS_DIR / "ensemble_config.json"
+
+_IF_WEIGHT = 0.6
+_AE_WEIGHT = 0.4
 
 # Canonical model feature order used during training and runtime inference.
 FEATURE_COLUMNS = [
@@ -64,6 +71,12 @@ class AnomalyEngine:
     def __init__(self) -> None:
         self._model = None
         self._scaler = None
+        self._ae_model = None
+        self._ae_scaler = None
+        self._ae_threshold = None
+        self._if_weight = _IF_WEIGHT
+        self._ae_weight = _AE_WEIGHT
+        self._ensemble_threshold = None
         self._model_loaded = False
 
     def _align_feature_length(self, x: np.ndarray, expected: int) -> np.ndarray:
@@ -115,6 +128,34 @@ class AnomalyEngine:
                     self._scaler = pickle.load(f)
                 logger.info("Feature scaler loaded from %s", _SCALER_PATH)
 
+            if _AE_MODEL_PATH.exists():
+                with open(_AE_MODEL_PATH, "rb") as f:
+                    self._ae_model = pickle.load(f)
+                logger.info("Autoencoder model loaded from %s", _AE_MODEL_PATH)
+
+            ae_scaler_path = _AE_SCALER_PATH if _AE_SCALER_PATH.exists() else _SCALER_PATH
+            if ae_scaler_path.exists():
+                with open(ae_scaler_path, "rb") as f:
+                    self._ae_scaler = pickle.load(f)
+                logger.info("Autoencoder scaler loaded from %s", ae_scaler_path)
+
+            if _AE_THRESHOLD_PATH.exists():
+                with open(_AE_THRESHOLD_PATH, "rb") as f:
+                    self._ae_threshold = pickle.load(f)
+                logger.info("Autoencoder threshold loaded from %s", _AE_THRESHOLD_PATH)
+
+            if _ENSEMBLE_CONFIG_PATH.exists():
+                try:
+                    import json
+                    with open(_ENSEMBLE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    self._if_weight = float(cfg.get("weight", self._if_weight))
+                    self._ae_weight = max(0.0, 1.0 - self._if_weight)
+                    self._ensemble_threshold = float(cfg.get("threshold", 50.0))
+                    logger.info("Ensemble config loaded from %s", _ENSEMBLE_CONFIG_PATH)
+                except Exception as exc:
+                    logger.warning("Could not load ensemble config: %s", exc)
+
             self._model_loaded = True
             return True
 
@@ -161,8 +202,28 @@ class AnomalyEngine:
             # decision_function: more negative = more anomalous
             raw_score = self._model.decision_function(x)[0]
             # Map to [0, 100]: raw typically in [-0.5, 0.5]
-            risk = max(0.0, min(100.0, (0.5 - raw_score) * 100.0))
-            return round(risk, 2)
+            if_risk = max(0.0, min(100.0, (0.5 - raw_score) * 100.0))
+
+            ae_risk = None
+            if self._ae_model is not None:
+                x_ae = features.reshape(1, -1)
+                if expected_features is not None:
+                    x_ae = self._align_feature_length(x_ae, int(expected_features))
+                if self._ae_scaler is not None:
+                    x_ae = self._ae_scaler.transform(x_ae)
+                recon = self._ae_model.predict(x_ae)
+                mae = float(np.mean(np.abs(x_ae - recon)))
+                threshold = float(self._ae_threshold or 0.0)
+                if threshold > 0:
+                    ae_risk = max(0.0, min(100.0, (mae / threshold) * 50.0))
+                else:
+                    ae_risk = max(0.0, min(100.0, mae * 100.0))
+
+            if ae_risk is None:
+                return round(if_risk, 2)
+
+            risk = (self._if_weight * if_risk) + (self._ae_weight * ae_risk)
+            return round(max(0.0, min(100.0, risk)), 2)
 
         except Exception as exc:
             logger.error("Anomaly scoring error: %s", exc)
