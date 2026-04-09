@@ -156,6 +156,87 @@ def _fmt_last_seen(ts_str: str) -> str:
     return f"{dt.strftime('%d %b %Y')} at {time_text}"
 
 
+def _fmt_minutes(total_minutes: int) -> str:
+    """Format minutes into compact human-readable text."""
+    minutes = max(0, int(total_minutes or 0))
+    hours, mins = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {mins:02d}m"
+    return f"{mins}m"
+
+
+def _fmt_seconds(total_seconds: int) -> str:
+    """Format seconds into compact human-readable text."""
+    seconds = max(0, int(total_seconds or 0))
+    hours, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {mins:02d}m"
+    return f"{mins:02d}m {secs:02d}s"
+
+
+def _is_hhmm(value: str) -> bool:
+    """Validate HH:MM (24-hour) text."""
+    return bool(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(value or "").strip()))
+
+
+def _combine_due_datetime(due_date: str, due_time: str) -> str:
+    """Combine date and time into ISO-like datetime string (local naive)."""
+    try:
+        dt = datetime.strptime(f"{due_date} {due_time}", "%Y-%m-%d %H:%M")
+        return dt.isoformat()
+    except Exception:
+        return ""
+
+
+def _fmt_due_display(due_date: str, due_time: str) -> str:
+    """Format due date/time as Today/Tomorrow/or full date with time."""
+    date_text = str(due_date or "").strip()
+    time_text = str(due_time or "").strip()
+
+    if not date_text and not time_text:
+        return "—"
+
+    try:
+        due_d = datetime.strptime(date_text, "%Y-%m-%d").date()
+        today = datetime.now().date()
+        day_delta = (due_d - today).days
+
+        if day_delta == 0:
+            prefix = "Today"
+        elif day_delta == 1:
+            prefix = "Tomorrow"
+        elif day_delta == -1:
+            prefix = "Yesterday"
+        else:
+            prefix = due_d.strftime("%d %b %Y")
+
+        if _is_hhmm(time_text):
+            return f"{prefix} at {time_text}"
+        return prefix
+    except Exception:
+        if date_text and time_text:
+            return f"{date_text} {time_text}"
+        return date_text or time_text
+
+
+def _due_color(due_date: str, status: str) -> str:
+    """Return color for due date urgency in task table."""
+    if status == "completed":
+        return C_MUTED
+    date_text = str(due_date or "").strip()
+    try:
+        due_d = datetime.strptime(date_text, "%Y-%m-%d").date()
+        today = datetime.now().date()
+        if due_d < today:
+            return C_RED
+        if due_d == today:
+            return C_AMBER
+        return C_MUTED
+    except Exception:
+        return C_MUTED
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Summary Card Widget
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1850,6 +1931,14 @@ class AdminPanel(ctk.CTk):
             self._due_var = ctk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
             ctk.CTkEntry(row1, textvariable=self._due_var, width=110).pack(side="left")
 
+        ctk.CTkLabel(row1, text="Time:", text_color=C_MUTED, font=ctk.CTkFont(size=12), width=46, anchor="w").pack(side="left", padx=(12, 0))
+        self._due_time_var = ctk.StringVar(value="17:00")
+        ctk.CTkEntry(row1, textvariable=self._due_time_var, width=80, placeholder_text="HH:MM").pack(side="left")
+
+        ctk.CTkLabel(row1, text="Allocated:", text_color=C_MUTED, font=ctk.CTkFont(size=12), width=72, anchor="w").pack(side="left", padx=(12, 0))
+        self._task_alloc_minutes_var = ctk.StringVar(value="60")
+        ctk.CTkEntry(row1, textvariable=self._task_alloc_minutes_var, width=70, placeholder_text="min").pack(side="left")
+
         row2 = ctk.CTkFrame(form, fg_color="transparent")
         row2.pack(fill="x", padx=16, pady=(8, 0))
         ctk.CTkLabel(row2, text="Title:", text_color=C_MUTED, font=ctk.CTkFont(size=12), width=90, anchor="w").pack(side="left")
@@ -1867,6 +1956,15 @@ class AdminPanel(ctk.CTk):
 
         # Task list
         ctk.CTkLabel(frame, text="All Tasks", font=ctk.CTkFont(size=13, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=24, pady=(4, 6))
+
+        hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
+        hdr.pack(fill="x", padx=20, pady=(0, 4))
+        for col, w in [
+            ("Title", 260), ("Employee", 95), ("Priority", 80), ("Due", 170),
+            ("Allocated", 95), ("Actual", 100), ("Status", 100), ("", 160),
+        ]:
+            ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, width=w, anchor="w").pack(side="left", padx=4)
+
         self._task_list_frame = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._task_list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 16))
         return frame
@@ -1900,16 +1998,34 @@ class AdminPanel(ctk.CTk):
         else:
             due = self._due_var.get()
 
+        due_time = self._due_time_var.get().strip()
+        if not _is_hhmm(due_time):
+            messagebox.showwarning("Validation", "Due time must be in HH:MM format (24-hour).")
+            return
+
+        try:
+            allocated_minutes = max(1, int(self._task_alloc_minutes_var.get().strip() or "0"))
+        except Exception:
+            messagebox.showwarning("Validation", "Allocated time must be a valid number of minutes.")
+            return
+
+        due_at = _combine_due_datetime(due, due_time)
+
         task_doc = {
             "task_id": str(uuid.uuid4()),
             "employee_id": emp_id,
             "title": title,
             "description": desc,
             "due_date": due,
+            "due_time": due_time,
+            "due_at": due_at,
             "priority": priority,
             "status": "pending",
             "assigned_by": "ADMIN",
             "assigned_at": datetime.utcnow().isoformat(),
+            "allocated_minutes": allocated_minutes,
+            "actual_seconds": 0,
+            "last_started_at": None,
             "started_at": None,
             "completed_at": None,
         }
@@ -1921,6 +2037,7 @@ class AdminPanel(ctk.CTk):
                 messagebox.showinfo("Success", f"Task '{title}' assigned to {emp_id}.")
                 self._task_title_var.set("")
                 self._task_desc_box.delete("1.0", "end")
+                self._task_alloc_minutes_var.set("60")
                 self._refresh_task_list()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -1946,18 +2063,35 @@ class AdminPanel(ctk.CTk):
             status = t.get("status", "pending")
             s_color = {"pending": C_MUTED, "in_progress": C_AMBER, "completed": C_GREEN}.get(status, C_MUTED)
             p_color = {"low": C_BLUE, "medium": C_AMBER, "high": C_RED}.get(t.get("priority", ""), C_MUTED)
-            row = ctk.CTkFrame(self._task_list_frame, fg_color=C_CARD, corner_radius=10, height=44)
+
+            allocated_minutes = int(t.get("allocated_minutes", 0) or 0)
+            actual_seconds = int(t.get("actual_seconds", 0) or 0)
+            if status == "in_progress":
+                run_start = _parse_iso_timestamp(t.get("last_started_at") or t.get("started_at") or "")
+                if run_start is not None:
+                    actual_seconds += max(0, int((datetime.now(run_start.tzinfo) - run_start).total_seconds()))
+
+            due_date = str(t.get("due_date", "") or "")
+            due_time = str(t.get("due_time", "") or "")
+            due_text = _fmt_due_display(due_date, due_time)
+            due_text_color = _due_color(due_date, status)
+
+            row = ctk.CTkFrame(self._task_list_frame, fg_color=C_CARD, corner_radius=10, height=46)
             row.pack(fill="x", pady=3)
             row.pack_propagate(False)
-            ctk.CTkLabel(row, text=t.get("title", "?"), text_color=C_TEXT, font=ctk.CTkFont(size=12), anchor="w").pack(side="left", padx=12)
-            ctk.CTkLabel(row, text=t.get("employee_id", "?"), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
-            ctk.CTkLabel(row, text=t.get("priority", "").title(), text_color=p_color, font=ctk.CTkFont(size=11)).pack(side="left", padx=8)
-            ctk.CTkLabel(row, text=status.replace("_", " ").title(), text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
-            ctk.CTkLabel(row, text=t.get("due_date", ""), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=8)
+
+            ctk.CTkLabel(row, text=_clip_text(t.get("title", "?"), 34), text_color=C_TEXT, font=ctk.CTkFont(size=12), width=260, anchor="w").pack(side="left", padx=(8, 4))
+            ctk.CTkLabel(row, text=t.get("employee_id", "?"), text_color=C_MUTED, font=ctk.CTkFont(size=11), width=95, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=t.get("priority", "").title(), text_color=p_color, font=ctk.CTkFont(size=11), width=80, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=due_text, text_color=due_text_color, font=ctk.CTkFont(size=11), width=170, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=_fmt_minutes(allocated_minutes), text_color=C_MUTED, font=ctk.CTkFont(size=11), width=95, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=_fmt_seconds(actual_seconds), text_color=C_MUTED, font=ctk.CTkFont(size=11), width=100, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=status.replace("_", " ").title(), text_color=s_color, font=ctk.CTkFont(size=11), width=100, anchor="w").pack(side="left", padx=4)
 
             # --- Action Buttons ---
-            btn_frame = ctk.CTkFrame(row, fg_color="transparent")
+            btn_frame = ctk.CTkFrame(row, fg_color="transparent", width=160)
             btn_frame.pack(side="right", padx=8)
+            btn_frame.pack_propagate(False)
 
             ctk.CTkButton(btn_frame, text="✏️ Edit", width=60, height=28, fg_color=C_BLUE, hover_color="#2563eb",
                           font=ctk.CTkFont(size=11), command=lambda task_obj=t: self._edit_task(task_obj)).pack(side="left", padx=4)
@@ -1988,7 +2122,7 @@ class AdminPanel(ctk.CTk):
         tid = task.get("task_id")
         win = ctk.CTkToplevel(self)
         win.title(f"Edit Task - {tid[:8]}")
-        win.geometry("450x450")
+        win.geometry("450x560")
         win.attributes("-topmost", True)
         win.configure(fg_color=C_BG)
 
@@ -2021,6 +2155,21 @@ class AdminPanel(ctk.CTk):
         ctk.CTkOptionMenu(form, variable=v_priority, values=["low", "medium", "high"], 
                           fg_color=C_BORDER, button_color=C_BORDER).pack(fill="x")
 
+        # Due date
+        ctk.CTkLabel(form, text="Due Date (YYYY-MM-DD)", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        v_due_date = ctk.StringVar(value=str(task.get("due_date", "")))
+        ctk.CTkEntry(form, textvariable=v_due_date, height=36, fg_color="#0f1117", border_color=C_BORDER).pack(fill="x")
+
+        # Due time
+        ctk.CTkLabel(form, text="Due Time (HH:MM)", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        v_due_time = ctk.StringVar(value=str(task.get("due_time", "17:00")))
+        ctk.CTkEntry(form, textvariable=v_due_time, height=36, fg_color="#0f1117", border_color=C_BORDER).pack(fill="x")
+
+        # Allocated time
+        ctk.CTkLabel(form, text="Allocated Minutes", text_color=C_MUTED, font=ctk.CTkFont(size=12), anchor="w").pack(fill="x", pady=(10, 2))
+        v_alloc = ctk.StringVar(value=str(task.get("allocated_minutes", 60)))
+        ctk.CTkEntry(form, textvariable=v_alloc, height=36, fg_color="#0f1117", border_color=C_BORDER).pack(fill="x")
+
         def save_changes():
             if not self._db or not self._db.is_connected: return
             new_title = e_title.get().strip()
@@ -2029,11 +2178,27 @@ class AdminPanel(ctk.CTk):
                 messagebox.showerror("Error", "Title cannot be empty.", parent=win)
                 return
 
+            new_due_date = v_due_date.get().strip()
+            new_due_time = v_due_time.get().strip()
+            if new_due_time and not _is_hhmm(new_due_time):
+                messagebox.showerror("Error", "Due time must be in HH:MM format (24-hour).", parent=win)
+                return
+
+            try:
+                allocated_minutes = max(1, int(v_alloc.get().strip() or "0"))
+            except Exception:
+                messagebox.showerror("Error", "Allocated minutes must be a number.", parent=win)
+                return
+
             update_data = {
                 "title": new_title,
                 "description": new_desc,
                 "status": v_status.get(),
-                "priority": v_priority.get()
+                "priority": v_priority.get(),
+                "due_date": new_due_date,
+                "due_time": new_due_time,
+                "due_at": _combine_due_datetime(new_due_date, new_due_time) if (new_due_date and new_due_time) else "",
+                "allocated_minutes": allocated_minutes,
             }
             # Special case for completion timestamp
             if v_status.get() == "completed" and task.get("status") != "completed":

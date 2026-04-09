@@ -57,6 +57,49 @@ def _fmt_duration(seconds: float) -> str:
     return f"{m:02d}m {s:02d}s"
 
 
+def _parse_iso_utc(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _fmt_task_due(due_date: str, due_time: str) -> str:
+    """Format due date/time as Today/Tomorrow/or full date with time."""
+    date_text = str(due_date or "").strip()
+    time_text = str(due_time or "").strip()
+
+    if not date_text and not time_text:
+        return "—"
+
+    try:
+        due_d = datetime.strptime(date_text, "%Y-%m-%d").date()
+        today = datetime.now().date()
+        day_delta = (due_d - today).days
+
+        if day_delta == 0:
+            prefix = "Today"
+        elif day_delta == 1:
+            prefix = "Tomorrow"
+        elif day_delta == -1:
+            prefix = "Yesterday"
+        else:
+            prefix = due_d.strftime("%d %b %Y")
+
+        if time_text:
+            return f"{prefix} at {time_text}"
+        return prefix
+    except Exception:
+        if date_text and time_text:
+            return f"{date_text} {time_text}"
+        return date_text or time_text
+
+
 def _priority_color(priority: str) -> str:
     return {"low": C_BLUE, "medium": C_AMBER, "high": C_RED}.get(priority.lower(), C_MUTED)
 
@@ -199,6 +242,7 @@ class TaskCard(ctk.CTkFrame):
         self._user_id = user_id
         self._timer_running = False
         self._timer_start: Optional[float] = None
+        self._base_actual_seconds: int = int(task.get("actual_seconds", 0) or 0)
         self._timer_label: Optional[ctk.CTkLabel] = None
         self._timer_after_id = None
         self._closed = False
@@ -225,7 +269,9 @@ class TaskCard(ctk.CTkFrame):
 
         meta = ctk.CTkFrame(self, fg_color="transparent")
         meta.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(meta, text=f"Due: {task.get('due_date','—')}", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
+        due_text = _fmt_task_due(task.get("due_date", ""), task.get("due_time", ""))
+        ctk.CTkLabel(meta, text=f"Due: {due_text}", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkLabel(meta, text=f"Allocated: {int(task.get('allocated_minutes', 0) or 0)} min", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
 
         self._status_lbl = ctk.CTkLabel(meta, text=status.replace("_", " ").title(),
                                         text_color=_status_color(status), font=ctk.CTkFont(size=11))
@@ -250,9 +296,11 @@ class TaskCard(ctk.CTkFrame):
             ctk.CTkButton(btn_row, text="Complete", width=110, fg_color=C_GREEN, hover_color="#15803d",
                           height=32, font=ctk.CTkFont(size=12), command=self._complete_task).pack(side="left")
             # Restart timer if started_at exists
-            if task.get("started_at"):
+            if task.get("last_started_at") or task.get("started_at"):
                 try:
-                    started = datetime.fromisoformat(task["started_at"].replace("Z", "+00:00"))
+                    started = _parse_iso_utc(task.get("last_started_at") or task.get("started_at") or "")
+                    if started is None:
+                        raise ValueError("invalid timestamp")
                     self._timer_start = started.timestamp()
                     self._timer_running = True
                     self._tick_timer()
@@ -268,13 +316,21 @@ class TaskCard(ctk.CTkFrame):
         now = datetime.utcnow().isoformat()
         try:
             col = self._db.get_collection("tasks")
+            update_data = {
+                "status": "in_progress",
+                "last_started_at": now,
+                "actual_seconds": int(self._base_actual_seconds),
+            }
+            if not self._task.get("started_at"):
+                update_data["started_at"] = now
             if col is not None:
                 col.update_one(
                     {"task_id": self._task["task_id"]},
-                    {"$set": {"status": "in_progress", "started_at": now}},
+                    {"$set": update_data},
                 )
             self._task["status"] = "in_progress"
-            self._task["started_at"] = now
+            self._task["started_at"] = self._task.get("started_at") or now
+            self._task["last_started_at"] = now
             self._status_lbl.configure(text="In Progress", text_color=C_AMBER)
             self._timer_start = time.time()
             self._timer_running = True
@@ -290,6 +346,11 @@ class TaskCard(ctk.CTkFrame):
             mb.showerror("Error", str(exc))
 
     def _pause_task(self) -> None:
+        run_seconds = 0
+        if self._timer_start is not None:
+            run_seconds = max(0, int(time.time() - self._timer_start))
+        total_seconds = int(self._base_actual_seconds) + run_seconds
+
         self._timer_running = False
         self._cancel_timer_after()
         now = datetime.utcnow().isoformat()
@@ -298,9 +359,13 @@ class TaskCard(ctk.CTkFrame):
             if col is not None:
                 col.update_one(
                     {"task_id": self._task["task_id"]},
-                    {"$set": {"status": "paused", "paused_at": now}},
+                    {"$set": {"status": "paused", "paused_at": now, "actual_seconds": total_seconds, "last_started_at": None}},
                 )
+            self._base_actual_seconds = total_seconds
             self._task["status"] = "paused"
+            self._task["actual_seconds"] = total_seconds
+            self._task["last_started_at"] = None
+            self._timer_start = None
             self._status_lbl.configure(text="Paused", text_color=C_RED)
             self._refresh_parent_tab()
         except Exception as exc:
@@ -309,6 +374,11 @@ class TaskCard(ctk.CTkFrame):
 
     def _complete_task(self) -> None:
         now = datetime.utcnow().isoformat()
+        run_seconds = 0
+        if self._timer_start is not None:
+            run_seconds = max(0, int(time.time() - self._timer_start))
+        total_seconds = int(self._base_actual_seconds) + run_seconds
+
         self._timer_running = False
         self._cancel_timer_after()
         try:
@@ -316,11 +386,15 @@ class TaskCard(ctk.CTkFrame):
             if col is not None:
                 col.update_one(
                     {"task_id": self._task["task_id"]},
-                    {"$set": {"status": "completed", "completed_at": now}},
+                    {"$set": {"status": "completed", "completed_at": now, "actual_seconds": total_seconds, "last_started_at": None}},
                 )
+            self._base_actual_seconds = total_seconds
+            self._task["actual_seconds"] = total_seconds
+            self._task["last_started_at"] = None
+            self._timer_start = None
             self._status_lbl.configure(text="Completed", text_color=C_GREEN)
             if self._timer_label:
-                self._timer_label.configure(text="Task completed")
+                self._timer_label.configure(text=f"Task completed in {_fmt_duration(total_seconds)}")
         except Exception as exc:
             import tkinter.messagebox as mb
             mb.showerror("Error", str(exc))
@@ -329,8 +403,9 @@ class TaskCard(ctk.CTkFrame):
         if self._closed or not self.winfo_exists() or not self._timer_running or self._timer_start is None:
             return
         elapsed = time.time() - self._timer_start
+        total_elapsed = float(self._base_actual_seconds) + max(0.0, elapsed)
         if self._timer_label:
-            self._timer_label.configure(text=f"Active: {_fmt_duration(elapsed)}")
+            self._timer_label.configure(text=f"Active: {_fmt_duration(total_elapsed)}")
         self._timer_after_id = self.after(1000, self._tick_timer)
 
     def _cancel_timer_after(self) -> None:
@@ -356,7 +431,7 @@ class TaskCard(ctk.CTkFrame):
                     "task_id": self._task.get("task_id"),
                     "employee_id": self._user_id,
                     "started_at": started_at,
-                    "estimated_duration": None,
+                    "estimated_duration": self._task.get("allocated_minutes"),
                     "title": self._task.get("title", ""),
                 })
         except Exception:
