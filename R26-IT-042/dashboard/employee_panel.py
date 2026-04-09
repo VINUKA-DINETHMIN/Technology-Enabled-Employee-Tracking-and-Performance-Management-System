@@ -48,6 +48,14 @@ C_SIDEBAR = "#1a1d27"
 POLL_TASKS_MS = 30_000      # 30 seconds
 TOAST_DURATION_MS = 4_000   # 4 seconds
 
+ATT_COLS = [
+    ("Date", 130),
+    ("Sign-in", 130),
+    ("Sign-out", 130),
+    ("Duration", 130),
+    ("Status", 120),
+]
+
 
 def _fmt_duration(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
@@ -749,8 +757,15 @@ class EmployeePanel(ctk.CTkToplevel):
 
         hdr = ctk.CTkFrame(frame, fg_color=C_SIDEBAR, corner_radius=8, height=34)
         hdr.pack(fill="x", padx=20, pady=(0, 2))
-        for col in ["Date", "Sign-in", "Sign-out", "Duration", "Status"]:
-            ctk.CTkLabel(hdr, text=col, font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w").pack(side="left", padx=16, pady=8, expand=True)
+        for col, width in ATT_COLS:
+            ctk.CTkLabel(
+                hdr,
+                text=col,
+                font=ctk.CTkFont(size=11),
+                text_color=C_MUTED,
+                width=width,
+                anchor="w",
+            ).pack(side="left", padx=8, pady=8)
 
         self._att_scroll = ctk.CTkScrollableFrame(frame, fg_color=C_BG)
         self._att_scroll.pack(fill="both", expand=True, padx=20, pady=(0, 16))
@@ -789,9 +804,23 @@ class EmployeePanel(ctk.CTkToplevel):
                     row = ctk.CTkFrame(self._att_scroll, fg_color=C_CARD, corner_radius=8, height=40)
                     row.pack(fill="x", pady=2)
                     row.pack_propagate(False)
-                    for val in [row_date, d.get("signin","—"), d.get("signout","—"), d.get("duration","—")]:
-                        ctk.CTkLabel(row, text=str(val), text_color=C_TEXT, font=ctk.CTkFont(size=11), anchor="w").pack(side="left", padx=16, expand=True)
-                    ctk.CTkLabel(row, text=status, text_color=s_color, font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
+                    row_vals = [
+                        str(row_date or "—"),
+                        str(d.get("signin") or "—"),
+                        str(d.get("signout") or "—"),
+                        str(d.get("duration") or "—"),
+                        str(status or "—"),
+                    ]
+                    for (col, width), val in zip(ATT_COLS, row_vals):
+                        color = s_color if col == "Status" else C_TEXT
+                        ctk.CTkLabel(
+                            row,
+                            text=val,
+                            text_color=color,
+                            font=ctk.CTkFont(size=11),
+                            width=width,
+                            anchor="w",
+                        ).pack(side="left", padx=8)
         except Exception as exc:
             ctk.CTkLabel(self._att_scroll, text=str(exc), text_color=C_RED).pack()
 
