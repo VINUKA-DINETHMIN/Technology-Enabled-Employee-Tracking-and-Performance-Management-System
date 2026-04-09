@@ -784,9 +784,33 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
     def _show_activity_log_detail(self, log_doc: dict) -> None:
         loc_hint = log_doc.get("location_hint") or "Unknown"
         loc_conf = float(log_doc.get("location_confidence", 0.0) or 0.0)
-        geo_dev = float(log_doc.get("geolocation_deviation", 0.0) or 0.0)
+        geo_dev_raw = log_doc.get("geolocation_deviation")
+        geo_resolved = bool(log_doc.get("geolocation_resolved", False))
         in_fence = log_doc.get("inside_office_geofence")
         trust = float(log_doc.get("location_trust_score", 0.0) or 0.0)
+        geo_source = str(log_doc.get("geo_source") or "unknown")
+        lat_val = log_doc.get("lat")
+        lon_val = log_doc.get("lon")
+        coords = "Unknown"
+        try:
+            if lat_val is not None and lon_val is not None:
+                coords = f"{float(lat_val):.5f}, {float(lon_val):.5f}"
+        except Exception:
+            coords = "Unknown"
+
+        geo_dev_text = "Unknown"
+        if geo_resolved and geo_dev_raw is not None:
+            try:
+                geo_dev_text = f"{float(geo_dev_raw):.3f}"
+            except Exception:
+                geo_dev_text = "Unknown"
+
+        in_fence_text = "Unknown"
+        if in_fence is True:
+            in_fence_text = "True"
+        elif in_fence is False:
+            in_fence_text = "False"
+
         lines = [
             f"Time: {_fmt_time(log_doc.get('timestamp', ''))}",
             f"Risk: {float(log_doc.get('composite_risk_score', 0.0) or 0.0):.2f}",
@@ -796,10 +820,13 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             f"Idle Ratio: {float(log_doc.get('idle_ratio', 0.0) or 0.0):.3f}",
             f"Location: {log_doc.get('location_mode', 'unknown')}",
             f"Estimated Place: {loc_hint}",
+            f"Geo Source: {geo_source}",
+            f"Coordinates: {coords}",
             f"Location Confidence: {loc_conf:.2f}",
             f"ISP: {log_doc.get('isp', 'Unknown')}",
-            f"Geo Deviation (KM): {geo_dev:.3f}",
-            f"Inside Office Geofence: {in_fence}",
+            f"Geo Deviation (KM): {geo_dev_text}",
+            f"Inside Office Geofence: {in_fence_text}",
+            f"Geo Check Resolved: {geo_resolved}",
             f"VPN/Proxy Detected: {bool(log_doc.get('vpn_proxy_detected', False))}",
             f"Hosting Network: {bool(log_doc.get('hosting_detected', False))}",
             f"Location Trust: {trust:.2f}",

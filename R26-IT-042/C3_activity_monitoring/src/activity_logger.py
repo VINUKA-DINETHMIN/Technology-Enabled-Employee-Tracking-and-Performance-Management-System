@@ -61,6 +61,15 @@ _LOG_INTERVAL = 60.0
 _UNPRODUCTIVE_APPS = ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _risk_to_label(score: float) -> str:
     if score < _SOFT_WARN:
         return "normal"
@@ -287,7 +296,7 @@ class ActivityLogger:
                 "total_focus_duration", "session_duration_min", "geolocation_deviation",
                 "wifi_ssid_match", "device_fingerprint_match", "face_liveness_score",
             ]
-            arr = np.array([float(fv.get(f, 0.0)) for f in numeric_fields], dtype=np.float32)
+            arr = np.array([_safe_float(fv.get(f, 0.0), 0.0) for f in numeric_fields], dtype=np.float32)
             risk_score = self._engine.score(arr)
 
         # Add deterministic policy penalties after model score.
@@ -316,6 +325,11 @@ class ActivityLogger:
             encrypted_fv = fv_json  # unencrypted fallback
 
         # ── Build document ────────────────────────────────────────────
+        geo_resolved = bool(fv.get("geolocation_resolved", False))
+        geo_dev_doc = None
+        if geo_resolved:
+            geo_dev_doc = round(_safe_float(fv.get("geolocation_deviation", 0.0), 0.0), 3)
+
         doc = {
             "timestamp": fv["timestamp"],
             "user_id": self._user_id,
@@ -323,10 +337,10 @@ class ActivityLogger:
             "feature_vector": encrypted_fv,
             "composite_risk_score": round(risk_score, 2),
             "productivity_score": productivity_score,
-            "idle_ratio": round(float(fv.get("idle_ratio", 0.0)), 4),
-            "app_switch_frequency": round(float(fv.get("app_switch_frequency", 0.0)), 3),
-            "active_app_entropy": round(float(fv.get("active_app_entropy", 0.0)), 4),
-            "total_focus_duration": round(float(fv.get("total_focus_duration", 0.0)), 2),
+            "idle_ratio": round(_safe_float(fv.get("idle_ratio", 0.0), 0.0), 4),
+            "app_switch_frequency": round(_safe_float(fv.get("app_switch_frequency", 0.0), 0.0), 3),
+            "active_app_entropy": round(_safe_float(fv.get("active_app_entropy", 0.0), 0.0), 4),
+            "total_focus_duration": round(_safe_float(fv.get("total_focus_duration", 0.0), 0.0), 2),
             "alert_triggered": alert_triggered,
             "contributing_factors": factors,
             "label": label,
@@ -338,14 +352,18 @@ class ActivityLogger:
             "isp": fv.get("geo_isp", "Unknown"),
             "org": fv.get("geo_org", "Unknown"),
             "asn": fv.get("geo_asn", "Unknown"),
-            "location_confidence": round(float(fv.get("geo_confidence", 0.0) or 0.0), 2),
+            "geo_source": fv.get("geo_source", "unknown"),
+            "lat": fv.get("geo_lat"),
+            "lon": fv.get("geo_lon"),
+            "location_confidence": round(_safe_float(fv.get("geo_confidence", 0.0), 0.0), 2),
             "location_hint": fv.get("location_hint", "Unknown"),
-            "geolocation_deviation": round(float(fv.get("geolocation_deviation", 0.0) or 0.0), 3),
+            "geolocation_deviation": geo_dev_doc,
             "inside_office_geofence": fv.get("inside_office_geofence"),
+            "geolocation_resolved": geo_resolved,
             "vpn_proxy_detected": bool(fv.get("vpn_proxy_detected", False)),
             "hosting_detected": bool(fv.get("hosting_detected", False)),
-            "location_trust_score": round(float(fv.get("location_trust_score", 0.0) or 0.0), 2),
-            "office_radius_km": round(float(fv.get("office_radius_km", 0.0) or 0.0), 2),
+            "location_trust_score": round(_safe_float(fv.get("location_trust_score", 0.0), 0.0), 2),
+            "office_radius_km": round(_safe_float(fv.get("office_radius_km", 0.0), 0.0), 2),
             "in_break": in_break,
             "break_type": break_type,
             "active_task_id": active_task_id,
