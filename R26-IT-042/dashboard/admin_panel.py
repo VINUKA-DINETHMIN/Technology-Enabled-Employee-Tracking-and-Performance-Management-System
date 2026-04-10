@@ -791,6 +791,37 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         geo_source = str(log_doc.get("geo_source") or "unknown")
         lat_val = log_doc.get("lat")
         lon_val = log_doc.get("lon")
+
+        # Backward compatibility: older activity logs may miss geo_source/coords.
+        # Try filling from the matching session record.
+        try:
+            if (geo_source in {"", "unknown"} or lat_val is None or lon_val is None) and self._db and self._db.is_connected:
+                sess_col = self._db.get_collection("sessions")
+                if sess_col is not None:
+                    sess = None
+                    sess_id = log_doc.get("session_id")
+                    if sess_id:
+                        sess = sess_col.find_one({"session_id": sess_id}, {"_id": 0})
+                    if sess is None:
+                        uid = log_doc.get("user_id")
+                        if uid:
+                            sess = sess_col.find_one({"employee_id": uid}, {"_id": 0}, sort=[("login_at", -1)])
+
+                    if sess:
+                        if geo_source in {"", "unknown"}:
+                            if sess.get("geo_source"):
+                                geo_source = str(sess.get("geo_source"))
+                            elif sess.get("ip") or sess.get("city"):
+                                geo_source = "session_fallback"
+                        if lat_val is None:
+                            lat_val = sess.get("lat")
+                        if lon_val is None:
+                            lon_val = sess.get("lon")
+                        if (loc_hint == "Unknown") and sess.get("location_hint"):
+                            loc_hint = str(sess.get("location_hint"))
+        except Exception:
+            pass
+
         coords = "Unknown"
         try:
             if lat_val is not None and lon_val is not None:
@@ -1122,6 +1153,8 @@ class AdminPanel(ctk.CTk):
         self._critical_sound_seen: set[str] = set()
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_server = None
+        self._closed = False
+        self._poll_after_id = None
 
         self.title(f"{settings.APP_NAME} — Admin Panel")
         w, h = 1200, 780
@@ -2070,19 +2103,33 @@ class AdminPanel(ctk.CTk):
             messagebox.showerror("Error", str(exc))
 
     def _fetch_tasks(self) -> None:
+        if self._closed or not self.winfo_exists():
+            return
         if not self._db or not self._db.is_connected:
             return
         try:
             col = self._db.get_collection("tasks")
             if col is None: return
             tasks = list(col.find({}, {"_id": 0}).sort("assigned_at", -1).limit(40))
+            if self._closed or not self.winfo_exists():
+                return
             self.after(0, lambda: self._update_task_ui(tasks))
         except Exception as exc:
+            if self._closed or not self.winfo_exists():
+                return
             self.after(0, lambda: self._update_task_ui([], error=str(exc)))
 
     def _update_task_ui(self, tasks: list, error: str = "") -> None:
+        if self._closed or not self.winfo_exists() or not hasattr(self, "_task_list_frame"):
+            return
+        if not self._task_list_frame.winfo_exists():
+            return
         for w in self._task_list_frame.winfo_children():
-            w.destroy()
+            try:
+                if w.winfo_exists():
+                    w.destroy()
+            except Exception:
+                pass
         if error:
             ctk.CTkLabel(self._task_list_frame, text=error, text_color=C_RED).pack()
             return
@@ -2736,19 +2783,21 @@ class AdminPanel(ctk.CTk):
         self._do_poll()
 
     def _do_poll(self) -> None:
+        if self._closed or not self.winfo_exists():
+            return
         if self._active_tab == "dashboard":
-            threading.Thread(target=self._refresh_dashboard, daemon=True).start()
+            self._refresh_dashboard()
         elif self._active_tab == "alerts":
-            threading.Thread(target=self._refresh_alerts, daemon=True).start()
+            self._refresh_alerts()
         elif self._active_tab == "tasks":
-            threading.Thread(target=self._refresh_task_list, daemon=True).start()
+            self._refresh_task_list()
         elif self._active_tab == "attendance":
-            threading.Thread(target=self._refresh_attendance, daemon=True).start()
+            self._refresh_attendance()
         elif self._active_tab == "live_grid":
-            threading.Thread(target=self._refresh_live_grid, daemon=True).start()
+            self._refresh_live_grid()
         elif self._active_tab == "employees":
-            threading.Thread(target=self._refresh_employees, daemon=True).start()
-        self.after(POLL_INTERVAL_MS, self._do_poll)
+            self._refresh_employees()
+        self._poll_after_id = self.after(POLL_INTERVAL_MS, self._do_poll)
 
     # ------------------------------------------------------------------
     # DB init
@@ -2760,6 +2809,13 @@ class AdminPanel(ctk.CTk):
         return db
 
     def _on_close(self) -> None:
+        self._closed = True
+        if self._poll_after_id is not None:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
         try:
             if self._ws_server is not None:
                 self._ws_server.close()
