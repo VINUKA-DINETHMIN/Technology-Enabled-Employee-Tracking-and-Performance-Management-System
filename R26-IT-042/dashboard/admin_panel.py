@@ -791,6 +791,37 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         geo_source = str(log_doc.get("geo_source") or "unknown")
         lat_val = log_doc.get("lat")
         lon_val = log_doc.get("lon")
+
+        # Backward compatibility: older activity logs may miss geo_source/coords.
+        # Try filling from the matching session record.
+        try:
+            if (geo_source in {"", "unknown"} or lat_val is None or lon_val is None) and self._db and self._db.is_connected:
+                sess_col = self._db.get_collection("sessions")
+                if sess_col is not None:
+                    sess = None
+                    sess_id = log_doc.get("session_id")
+                    if sess_id:
+                        sess = sess_col.find_one({"session_id": sess_id}, {"_id": 0})
+                    if sess is None:
+                        uid = log_doc.get("user_id")
+                        if uid:
+                            sess = sess_col.find_one({"employee_id": uid}, {"_id": 0}, sort=[("login_at", -1)])
+
+                    if sess:
+                        if geo_source in {"", "unknown"}:
+                            if sess.get("geo_source"):
+                                geo_source = str(sess.get("geo_source"))
+                            elif sess.get("ip") or sess.get("city"):
+                                geo_source = "session_fallback"
+                        if lat_val is None:
+                            lat_val = sess.get("lat")
+                        if lon_val is None:
+                            lon_val = sess.get("lon")
+                        if (loc_hint == "Unknown") and sess.get("location_hint"):
+                            loc_hint = str(sess.get("location_hint"))
+        except Exception:
+            pass
+
         coords = "Unknown"
         try:
             if lat_val is not None and lon_val is not None:
