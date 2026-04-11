@@ -267,6 +267,9 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         super().__init__(parent)
         self._db = db
         self._emp = employee
+        self._emp_id = employee.get("employee_id", "?")
+        self._detail_closed = False
+        self._ss_poll_after_id = None
         emp_id = employee.get("employee_id", "?")
         name = employee.get("full_name", emp_id)
 
@@ -512,6 +515,38 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkButton(ctrl_frame, text="Live Screen", fg_color="#3b82f6", hover_color="#2563eb", height=38, 
                       command=lambda: LiveScreenViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
 
+        # Keep screenshot panel synced without reopening the detail window.
+        self.protocol("WM_DELETE_WINDOW", self._on_close_detail)
+        self._schedule_screenshot_refresh(initial_delay_ms=1500)
+
+    def _on_close_detail(self) -> None:
+        self._detail_closed = True
+        try:
+            if self._ss_poll_after_id is not None:
+                self.after_cancel(self._ss_poll_after_id)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _schedule_screenshot_refresh(self, initial_delay_ms: int = 3000) -> None:
+        if self._detail_closed:
+            return
+        try:
+            if self._ss_poll_after_id is not None:
+                self.after_cancel(self._ss_poll_after_id)
+        except Exception:
+            pass
+        self._ss_poll_after_id = self.after(initial_delay_ms, self._poll_screenshots)
+
+    def _poll_screenshots(self) -> None:
+        if self._detail_closed or not self.winfo_exists():
+            return
+        try:
+            self._render_screenshots(self._ssf, self._emp_id)
+        except Exception:
+            pass
+        self._ss_poll_after_id = self.after(3000, self._poll_screenshots)
+
     def _force_screenshot(self, emp_id: str) -> None:
         if not self._db or not self._db.is_connected: return
         import uuid
@@ -528,6 +563,9 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                     "timestamp": now.isoformat(),
                     "expires_at": expires
                 })
+
+            # Trigger quick UI refresh attempts so new screenshot appears as soon as written.
+            self._schedule_screenshot_refresh(initial_delay_ms=800)
         except Exception: pass
 
     def _resend_mfa(self) -> None:
