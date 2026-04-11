@@ -2037,7 +2037,15 @@ class AdminPanel(ctk.CTk):
             if col is not None:
                 emps = list(col.find({}, {"employee_id": 1, "full_name": 1, "_id": 0}))
                 values = [f"{e['employee_id']} — {e.get('full_name','')}" for e in emps]
-                self._task_emp_dd.configure(values=values or ["No employees"])
+                values = values or ["No employees"]
+
+                current = self._task_emp_var.get().strip()
+                self._task_emp_dd.configure(values=values)
+
+                if current and current in values:
+                    self._task_emp_var.set(current)
+                elif current in {"", "Loading...", "No employees", "Select employee"}:
+                    self._task_emp_var.set(values[0])
         except Exception:
             pass
 
@@ -2790,6 +2798,7 @@ class AdminPanel(ctk.CTk):
         elif self._active_tab == "alerts":
             self._refresh_alerts()
         elif self._active_tab == "tasks":
+            self._refresh_employee_dropdown()
             self._refresh_task_list()
         elif self._active_tab == "attendance":
             self._refresh_attendance()
