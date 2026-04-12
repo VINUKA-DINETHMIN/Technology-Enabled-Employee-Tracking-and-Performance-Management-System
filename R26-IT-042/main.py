@@ -564,6 +564,181 @@ class Application:
             def handle_stop_screen(cmd: dict):
                 log.info("Stopping live screen stream")
                 self._screen_streaming = False
+<<<<<<< Updated upstream
+=======
+
+            def handle_antispoofing_check(cmd: dict):
+                """
+                Remote anti-spoofing check initiated by admin.
+                Runs ResNet50 model on live camera frames, determines spoof status,
+                and compares the live face against the logged-in employee's stored face.
+                """
+                log.info("Executing remote command: antispoofing_check")
+                try:
+                    from C2_Anti_Spoofing_Detection.src.antispoofing_detector import AntiSpoofingDetector
+                    from C3_activity_monitoring.src.face_verifier import FaceVerifier
+                    from common.antispoofing_utils import store_antispoofing_result
+                    import time as time_module
+                    
+                    detector = AntiSpoofingDetector()
+                    if not detector.load_model():
+                        log.warning(
+                            "Anti-spoofing model unavailable (missing TensorFlow or model file); marking check as unavailable."
+                        )
+                        store_antispoofing_result(
+                            db_client=self._db_client,
+                            user_id=self._user_id,
+                            is_real=True,
+                            confidence=0.0,
+                            frame_count=0,
+                            avg_score=0.0,
+                            duration_sec=0.0,
+                            identity_match=None,
+                            identity_score=0.0,
+                            identity_status="MODEL_UNAVAILABLE",
+                            verdict="CHECK_UNAVAILABLE",
+                        )
+                        return
+
+                    stored_embedding = None
+                    identity_available = False
+                    verifier = None
+                    try:
+                        emp_col = self._db_client.get_collection("employees")
+                        if emp_col is not None:
+                            emp_doc = emp_col.find_one(
+                                {"employee_id": self._user_id},
+                                {"face_embedding": 1}
+                            )
+                            if emp_doc is not None:
+                                stored_embedding = emp_doc.get("face_embedding")
+                                if stored_embedding:
+                                    identity_available = True
+                    except Exception as exc:
+                        log.warning("Unable to load stored user face embedding: %s", exc)
+
+                    FACE_RECOGNITION_THRESHOLD = 0.85
+
+                    if identity_available:
+                        try:
+                            verifier = FaceVerifier(model_path="models/face_recognition_sface.onnx")
+                        except Exception as exc:
+                            log.warning("Face identity verifier unavailable: %s", exc)
+                            verifier = None
+
+                    import cv2
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        log.warning("Camera not available for anti-spoofing check.")
+                        detector.close()
+                        if verifier:
+                            verifier.close()
+                        return
+                    
+                    # Run check: collect predictions over ~10 seconds
+                    predictions = []
+                    scores = []
+                    identity_scores = []
+                    identity_match_count = 0
+                    best_identity_score = 0.0
+                    start_time = time_module.time()
+                    timeout_sec = 10.0
+                    
+                    while (time_module.time() - start_time) < timeout_sec:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        is_real, confidence, _ = detector.predict(frame)
+                        predictions.append(is_real)
+                        scores.append(1.0 - confidence if is_real else confidence)
+
+                        if identity_available and verifier is not None and stored_embedding is not None:
+                            identity_score = 0.0
+                            matched = False
+                            try:
+                                matched, identity_score = verifier.verify(
+                                    frame,
+                                    stored_embedding,
+                                    threshold=FACE_RECOGNITION_THRESHOLD,
+                                )
+                            except Exception as exc:
+                                log.debug("Identity verification failed for frame: %s", exc)
+                                matched = False
+                                identity_score = 0.0
+
+                            identity_scores.append(identity_score)
+                            best_identity_score = max(best_identity_score, identity_score)
+                            if matched:
+                                identity_match_count += 1
+
+                    cap.release()
+                    detector.close()
+                    if verifier:
+                        verifier.close()
+                    
+                    if not predictions:
+                        log.warning("No frames captured for anti-spoofing check.")
+                        return
+                    
+                    # Average results
+                    duration = time_module.time() - start_time
+                    avg_is_real = sum(predictions) / len(predictions) >= 0.5
+                    avg_confidence = sum(confidence for confidence in scores) / len(scores) if scores else 0.0
+                    avg_score = sum(scores) / len(scores) if scores else 0.5
+                    avg_identity_score = sum(identity_scores) / len(identity_scores) if identity_scores else 0.0
+                    identity_match = False
+                    identity_status = "UNKNOWN"
+
+                    if identity_available and verifier is not None and stored_embedding is not None:
+                        if identity_match_count >= 2 or avg_identity_score >= FACE_RECOGNITION_THRESHOLD:
+                            identity_match = True
+                            identity_status = "SAME_PERSON"
+                        else:
+                            identity_match = False
+                            identity_status = "DIFFERENT_PERSON"
+                    elif identity_available and verifier is None:
+                        identity_status = "VERIFIER_UNAVAILABLE"
+                    elif not identity_available:
+                        identity_status = "NO_TEMPLATE"
+
+                    if not avg_is_real:
+                        verdict = "FAKE"
+                    elif identity_status == "SAME_PERSON":
+                        verdict = "REAL_SAME_PERSON"
+                    elif identity_status == "DIFFERENT_PERSON":
+                        verdict = "REAL_DIFFERENT_PERSON"
+                    else:
+                        verdict = "REAL_UNKNOWN"
+                    
+                    success = store_antispoofing_result(
+                        db_client=self._db_client,
+                        user_id=self._user_id,
+                        is_real=avg_is_real,
+                        confidence=avg_confidence,
+                        frame_count=len(predictions),
+                        avg_score=avg_score,
+                        duration_sec=duration,
+                        identity_match=identity_match if identity_status in {"SAME_PERSON", "DIFFERENT_PERSON"} else None,
+                        identity_score=avg_identity_score,
+                        identity_status=identity_status,
+                        verdict=verdict,
+                    )
+                    
+                    if success:
+                        log.info(
+                            "Anti-spoofing check completed: user=%s verdict=%s confidence=%.2f frames=%d identity_status=%s identity_score=%.2f",
+                            self._user_id,
+                            verdict,
+                            avg_confidence,
+                            len(predictions),
+                            identity_status,
+                            avg_identity_score,
+                        )
+                    
+                except Exception as e:
+                    log.error("Anti-spoofing check execution failed: %s", e)
+>>>>>>> Stashed changes
             
             poller.register_handler("force_screenshot", handle_screenshot)
             poller.register_handler("start_live_cam", handle_start_cam)

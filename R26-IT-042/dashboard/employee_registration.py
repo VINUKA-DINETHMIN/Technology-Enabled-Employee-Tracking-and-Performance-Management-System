@@ -83,7 +83,7 @@ class FaceCaptureWindow(ctk.CTkToplevel):
     """
 
     CAPTURE_COUNT = 5
-    STABILITY_FRAMES = 8   # consecutive frames with face detected before auto-capture
+    STABILITY_FRAMES = 4   # consecutive frames with face detected before auto-capture
 
     def __init__(self, parent, form_data: dict, db: MongoDBClient, admin_id: str = "ADMIN") -> None:
         super().__init__(parent)
@@ -95,6 +95,8 @@ class FaceCaptureWindow(ctk.CTkToplevel):
         self._running = False
         self._cap = None
         self._face_detection = None
+        self._haar_cascade = None
+        self._latest_frame_rgb = None
 
         self.title("Face Capture — Step 2 of 2")
         self.geometry("700x620")
@@ -133,6 +135,8 @@ class FaceCaptureWindow(ctk.CTkToplevel):
         btn_row.pack(pady=12)
         ctk.CTkButton(btn_row, text="Retake", fg_color=C_BORDER, hover_color="#374151",
                       width=110, command=self._retake).pack(side="left", padx=8)
+        ctk.CTkButton(btn_row, text="Capture Now", fg_color=C_BLUE, hover_color="#2563eb",
+                  width=110, command=self._capture_current_frame).pack(side="left", padx=8)
         self._confirm_btn = ctk.CTkButton(btn_row, text="Confirm and Register",
                                            fg_color=C_TEAL, hover_color=C_TEAL_D, width=160,
                                            state="disabled", command=self._on_confirm)
@@ -154,12 +158,17 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                 import mediapipe as mp
                 if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_detection"):
                     self._face_detection = mp.solutions.face_detection.FaceDetection(
-                        model_selection=0, min_detection_confidence=0.7
+                        model_selection=0, min_detection_confidence=0.5
                     )
                 else:
                     self._face_detection = None
             except Exception:
                 self._face_detection = None
+
+            # Preload fallback detector once instead of recreating per frame
+            self._haar_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
 
             self._running = True
             self._set_status("Position your face in the frame", C_MUTED)
@@ -176,6 +185,7 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                 continue
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self._latest_frame_rgb = frame_rgb.copy()
             face_detected = self._detect_face(frame_rgb, frame)
 
             if face_detected:
@@ -199,7 +209,6 @@ class FaceCaptureWindow(ctk.CTkToplevel):
         import cv2
         try:
             if self._face_detection is not None:
-                import mediapipe as mp
                 results = self._face_detection.process(frame_rgb)
                 if results.detections:
                     for detection in results.detections:
@@ -213,15 +222,17 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                         cv2.ellipse(frame_bgr, (w // 2, h // 2), (120, 150), 0, 0, 360, (20, 184, 166), 3)
                         cv2.rectangle(frame_bgr, (x, y), (x + bw, y + bh), (20, 184, 166), 2)
                     return True
-                return False
-            else:
-                # Fallback: Haar cascade
-                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-                cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-                faces = cascade.detectMultiScale(gray, 1.1, 5)
-                for (x, y, w_, h_) in faces:
-                    cv2.rectangle(frame_bgr, (x, y), (x + w_, y + h_), (20, 184, 166), 2)
-                return len(faces) > 0
+
+            # Fallback: Haar cascade (also used when MediaPipe gives no detections)
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            if self._haar_cascade is None:
+                self._haar_cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                )
+            faces = self._haar_cascade.detectMultiScale(gray, 1.1, 4)
+            for (x, y, w_, h_) in faces:
+                cv2.rectangle(frame_bgr, (x, y), (x + w_, y + h_), (20, 184, 166), 2)
+            return len(faces) > 0
         except Exception:
             return False
 
@@ -246,12 +257,21 @@ class FaceCaptureWindow(ctk.CTkToplevel):
     def _capture_frame(self, frame_rgb) -> None:
         self._captured_frames.append(frame_rgb)
         idx = len(self._captured_frames) - 1
+        self._set_status(f"Captured {len(self._captured_frames)}/{self.CAPTURE_COUNT}", C_TEAL)
         if idx < len(self._dots):
             self.after(0, lambda i=idx: self._dots[i].configure(text="●", text_color=C_TEAL))
 
         if len(self._captured_frames) >= self.CAPTURE_COUNT:
             self._running = False
             self.after(0, self._on_captures_complete)
+
+    def _capture_current_frame(self) -> None:
+        if len(self._captured_frames) >= self.CAPTURE_COUNT:
+            return
+        if self._latest_frame_rgb is None:
+            self._set_status("No frame available yet. Please wait...", C_RED)
+            return
+        self._capture_frame(self._latest_frame_rgb.copy())
 
     def _on_captures_complete(self) -> None:
         self._set_status(f"Captured! {self.CAPTURE_COUNT} photos saved.", C_GREEN)
@@ -330,6 +350,11 @@ class FaceCaptureWindow(ctk.CTkToplevel):
                                 embeddings.append(emb)
                         except Exception as e:
                             print(f"⚠ Embedding extraction failed: {e}")
+
+            if not face_b64s:
+                raise RuntimeError(
+                    "No valid face images were extracted. Please retake in better lighting and keep face centered."
+                )
             
             # Average the embeddings if multiple captures available
             if embeddings:
