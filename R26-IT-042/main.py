@@ -187,6 +187,10 @@ class Application:
                 [("user_id", pymongo.ASCENDING), ("timestamp", pymongo.DESCENDING)],
                 name="user_violations", background=True,
             )
+            db["antispoofing_checks"].create_index(
+                [("user_id", pymongo.ASCENDING), ("timestamp", pymongo.DESCENDING)],
+                name="user_antispoofing_checks", background=True,
+            )
             log.debug("Extra MongoDB indexes ensured.")
         except Exception as exc:
             log.warning("Could not ensure extra indexes: %s", exc)
@@ -580,22 +584,7 @@ class Application:
                     
                     detector = AntiSpoofingDetector()
                     if not detector.load_model():
-                        log.warning(
-                            "Anti-spoofing model unavailable (missing TensorFlow or model file); marking check as unavailable."
-                        )
-                        store_antispoofing_result(
-                            db_client=self._db_client,
-                            user_id=self._user_id,
-                            is_real=True,
-                            confidence=0.0,
-                            frame_count=0,
-                            avg_score=0.0,
-                            duration_sec=0.0,
-                            identity_match=None,
-                            identity_score=0.0,
-                            identity_status="MODEL_UNAVAILABLE",
-                            verdict="CHECK_UNAVAILABLE",
-                        )
+                        log.error("Anti-spoofing model failed to load.")
                         return
 
                     stored_embedding = None

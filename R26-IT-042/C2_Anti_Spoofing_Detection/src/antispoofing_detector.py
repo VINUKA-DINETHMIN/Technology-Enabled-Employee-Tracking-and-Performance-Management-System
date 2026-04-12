@@ -12,7 +12,6 @@ MediaPipe liveness detection.
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -81,12 +80,8 @@ class AntiSpoofingDetector:
             logger.info("Anti-spoofing model loaded from %s", self._model_path)
             return True
 
-        except ImportError as exc:
-            logger.warning(
-                "TensorFlow import failed in interpreter=%s (%s) — anti-spoofing detection disabled.",
-                sys.executable,
-                exc,
-            )
+        except ImportError:
+            logger.warning("TensorFlow not installed — anti-spoofing detection disabled.")
             return False
         except Exception as exc:
             logger.error("Failed to load anti-spoofing model: %s", exc)
