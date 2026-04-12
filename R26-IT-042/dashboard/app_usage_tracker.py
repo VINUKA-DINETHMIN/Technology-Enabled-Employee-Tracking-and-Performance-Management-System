@@ -55,6 +55,7 @@ class AppUsageTrackerUI:
         self._current_period = "today"
         self._refresh_active = False
         self._refresh_thread: Optional[threading.Thread] = None
+        self._refresh_after_id = None
         self._main_frame: Optional[ctk.CTkFrame] = None
 
     def show(self) -> None:
@@ -132,6 +133,9 @@ class AppUsageTrackerUI:
 
         # Load initial data
         self._refresh_data()
+
+        # Keep analytics view updated while detail window is open.
+        self.start_auto_refresh(interval_minutes=1)
 
     def _make_card(
         self, parent: ctk.CTkFrame, label: str, value: str
@@ -220,7 +224,10 @@ class AppUsageTrackerUI:
         # Format last used
         try:
             if last_used:
-                dt = datetime.fromisoformat(last_used.replace("Z", "+00:00"))
+                # Convert UTC/offset timestamp to local timezone for display.
+                dt = datetime.fromisoformat(str(last_used).replace("Z", "+00:00"))
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone()
                 last_used_str = dt.strftime("%H:%M")
             else:
                 last_used_str = "—"
@@ -298,21 +305,31 @@ class AppUsageTrackerUI:
         ).pack(side="left", padx=4)
 
     def start_auto_refresh(self, interval_minutes: int = 5) -> None:
-        """Start auto-refresh thread to update data at specified interval."""
+        """Start periodic refresh using Tk's UI thread scheduler."""
         if self._refresh_active:
             return
 
         self._refresh_active = True
+        delay_ms = max(10_000, int(interval_minutes * 60 * 1000))
 
-        def _auto_refresh_loop():
-            while self._refresh_active:
-                time.sleep(interval_minutes * 60)
-                if self._refresh_active:
-                    self._refresh_data()
+        def _tick() -> None:
+            if not self._refresh_active:
+                return
+            try:
+                self._refresh_data()
+            finally:
+                if self._main_frame is not None and self._main_frame.winfo_exists():
+                    self._refresh_after_id = self._main_frame.after(delay_ms, _tick)
 
-        self._refresh_thread = threading.Thread(target=_auto_refresh_loop, daemon=True)
-        self._refresh_thread.start()
+        if self._main_frame is not None and self._main_frame.winfo_exists():
+            self._refresh_after_id = self._main_frame.after(delay_ms, _tick)
 
     def stop_auto_refresh(self) -> None:
         """Stop auto-refresh loop."""
         self._refresh_active = False
+        if self._refresh_after_id is not None and self._main_frame is not None:
+            try:
+                self._main_frame.after_cancel(self._refresh_after_id)
+            except Exception:
+                pass
+        self._refresh_after_id = None

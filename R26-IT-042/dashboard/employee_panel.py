@@ -167,7 +167,7 @@ class BreakConfigPopup(ctk.CTkToplevel):
     def _build(self) -> None:
         ctk.CTkLabel(self, text="Configure Your Break Schedule",
                      font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(pady=(20, 4))
-        ctk.CTkLabel(self, text="Times are applied from the next session",
+        ctk.CTkLabel(self, text="Times are applied immediately",
                      font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(pady=(0, 12))
 
         defaults = {
@@ -250,6 +250,16 @@ class BreakConfigPopup(ctk.CTkToplevel):
             from C3_activity_monitoring.src.break_manager import BreakManager
             bm = BreakManager(user_id=self._user_id)
             bm.configure_breaks(cfg)
+
+            # Also apply to live session BreakManager (if already running),
+            # so automatic triggering works without requiring relogin.
+            try:
+                parent_panel = self.master
+                live_bm = getattr(parent_panel, "_bm", None)
+                if live_bm is not None:
+                    live_bm.configure_breaks(cfg)
+            except Exception:
+                pass
         except Exception as exc:
             import tkinter.messagebox as mb
             mb.showerror("Error", str(exc))
