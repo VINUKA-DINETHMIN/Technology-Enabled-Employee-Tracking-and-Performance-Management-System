@@ -564,8 +564,6 @@ class Application:
             def handle_stop_screen(cmd: dict):
                 log.info("Stopping live screen stream")
                 self._screen_streaming = False
-<<<<<<< Updated upstream
-=======
 
             def handle_antispoofing_check(cmd: dict):
                 """
@@ -738,13 +736,13 @@ class Application:
                     
                 except Exception as e:
                     log.error("Anti-spoofing check execution failed: %s", e)
->>>>>>> Stashed changes
             
             poller.register_handler("force_screenshot", handle_screenshot)
             poller.register_handler("start_live_cam", handle_start_cam)
             poller.register_handler("stop_live_cam", handle_stop_cam)
             poller.register_handler("start_live_screen", handle_start_screen)
             poller.register_handler("stop_live_screen", handle_stop_screen)
+            poller.register_handler("start_antispoofing_check", handle_antispoofing_check)
             
             # Start polling
             poller.start()
