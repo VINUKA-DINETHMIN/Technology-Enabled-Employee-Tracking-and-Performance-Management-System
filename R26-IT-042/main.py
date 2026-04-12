@@ -590,12 +590,14 @@ class Application:
                     stored_embedding = None
                     identity_available = False
                     verifier = None
+                    legacy_histogram = False
+                    emp_doc = None
                     try:
                         emp_col = self._db_client.get_collection("employees")
                         if emp_col is not None:
                             emp_doc = emp_col.find_one(
                                 {"employee_id": self._user_id},
-                                {"face_embedding": 1}
+                                {"face_embedding": 1, "face_images": 1}
                             )
                             if emp_doc is not None:
                                 stored_embedding = emp_doc.get("face_embedding")
@@ -604,7 +606,67 @@ class Application:
                     except Exception as exc:
                         log.warning("Unable to load stored user face embedding: %s", exc)
 
-                    FACE_RECOGNITION_THRESHOLD = 0.85
+                    FACE_RECOGNITION_THRESHOLD = 0.78
+
+                    def is_facenet_embedding(embedding) -> bool:
+                        try:
+                            import numpy as np
+                            vec = np.array(embedding, dtype=np.float32).flatten()
+                            if vec.size != 128:
+                                return False
+                            max_abs = float(np.max(np.abs(vec)))
+                            mean_abs = float(np.mean(np.abs(vec)))
+                            return max_abs <= 5.0 and mean_abs <= 1.0
+                        except Exception:
+                            return False
+
+                    def bootstrap_facenet_embedding(images_b64):
+                        try:
+                            import base64
+                            import cv2
+                            import numpy as np
+                            embeddings = []
+                            for img_b64 in (images_b64 or [])[:5]:
+                                try:
+                                    raw = base64.b64decode(img_b64)
+                                    arr = np.frombuffer(raw, dtype=np.uint8)
+                                    gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                                    if gray is None:
+                                        continue
+                                    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                                    emb = verifier.get_embedding(bgr)
+                                    if emb is not None:
+                                        embeddings.append(emb)
+                                except Exception:
+                                    continue
+                            if not embeddings:
+                                return []
+                            avg_emb = np.mean(np.array(embeddings), axis=0).tolist()
+                            return avg_emb
+                        except Exception:
+                            return []
+
+                    def histogram_similarity(face_roi, stored_hist):
+                        try:
+                            import cv2
+                            import numpy as np
+                            if face_roi is None or face_roi.size == 0:
+                                return 0.0
+                            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+                            gray = cv2.equalizeHist(gray)
+                            current_hist = cv2.calcHist([gray], [0], None, [128], [0, 256]).flatten()
+                            stored_vec = np.array(stored_hist, dtype=np.float32).flatten()
+                            if current_hist.size != stored_vec.size:
+                                min_len = min(current_hist.size, stored_vec.size)
+                                current_hist = current_hist[:min_len]
+                                stored_vec = stored_vec[:min_len]
+                            norm_current = np.linalg.norm(current_hist)
+                            norm_stored = np.linalg.norm(stored_vec)
+                            if norm_current < 1e-6 or norm_stored < 1e-6:
+                                return 0.0
+                            return float(np.dot(current_hist, stored_vec) / (norm_current * norm_stored))
+                        except Exception:
+                            return 0.0
 
                     if identity_available:
                         try:
@@ -613,7 +675,28 @@ class Application:
                             log.warning("Face identity verifier unavailable: %s", exc)
                             verifier = None
 
+                    if identity_available and verifier is not None and stored_embedding is not None:
+                        if not is_facenet_embedding(stored_embedding):
+                            face_images = emp_doc.get("face_images", []) if emp_doc is not None else []
+                            migrated_embedding = []
+                            if face_images:
+                                migrated_embedding = bootstrap_facenet_embedding(face_images)
+                            if migrated_embedding:
+                                stored_embedding = migrated_embedding
+                                try:
+                                    emp_col.update_one(
+                                        {"employee_id": self._user_id},
+                                        {"$set": {"face_embedding": migrated_embedding}}
+                                    )
+                                    log.info("Migrated legacy face_embedding to FaceNet template for user %s", self._user_id)
+                                except Exception:
+                                    log.warning("Unable to persist migrated FaceNet embedding for user %s", self._user_id)
+                            else:
+                                legacy_histogram = True
+                                log.info("Using legacy histogram fallback for identity verification for user %s", self._user_id)
+
                     import cv2
+                    import numpy as np
                     cap = cv2.VideoCapture(0)
                     if not cap.isOpened():
                         log.warning("Camera not available for anti-spoofing check.")
@@ -621,6 +704,12 @@ class Application:
                         if verifier:
                             verifier.close()
                         return
+
+                    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                    face_cascade = cv2.CascadeClassifier(cascade_path)
+                    if face_cascade.empty():
+                        log.warning("Failed to load face cascade for identity verification.")
+                        face_cascade = None
                     
                     # Run check: collect predictions over ~10 seconds
                     predictions = []
@@ -640,15 +729,41 @@ class Application:
                         predictions.append(is_real)
                         scores.append(1.0 - confidence if is_real else confidence)
 
-                        if identity_available and verifier is not None and stored_embedding is not None:
+                        detection_box = None
+                        if face_cascade is not None:
+                            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                            faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+                            if len(faces) > 0:
+                                detection_box = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+
+                        if identity_available and stored_embedding is not None:
                             identity_score = 0.0
                             matched = False
                             try:
-                                matched, identity_score = verifier.verify(
-                                    frame,
-                                    stored_embedding,
-                                    threshold=FACE_RECOGNITION_THRESHOLD,
-                                )
+                                if detection_box is not None:
+                                    if verifier is not None and not legacy_histogram:
+                                        matched, identity_score = verifier.verify(
+                                            frame,
+                                            stored_embedding,
+                                            threshold=FACE_RECOGNITION_THRESHOLD,
+                                            detection_box=np.array(detection_box, dtype=np.uint32),
+                                        )
+                                    else:
+                                        x, y, w, h = detection_box
+                                        face_roi = frame[y:y + h, x:x + w]
+                                        identity_score = histogram_similarity(face_roi, stored_embedding)
+                                        matched = identity_score >= 0.45
+                                else:
+                                    log.debug("No face region detected by cascade; falling back to full-frame identity verification.")
+                                    if verifier is not None and not legacy_histogram:
+                                        matched, identity_score = verifier.verify(
+                                            frame,
+                                            stored_embedding,
+                                            threshold=FACE_RECOGNITION_THRESHOLD,
+                                        )
+                                    else:
+                                        identity_score = histogram_similarity(frame, stored_embedding)
+                                        matched = identity_score >= 0.45
                             except Exception as exc:
                                 log.debug("Identity verification failed for frame: %s", exc)
                                 matched = False
@@ -673,12 +788,12 @@ class Application:
                     avg_is_real = sum(predictions) / len(predictions) >= 0.5
                     avg_confidence = sum(confidence for confidence in scores) / len(scores) if scores else 0.0
                     avg_score = sum(scores) / len(scores) if scores else 0.5
-                    avg_identity_score = sum(identity_scores) / len(identity_scores) if identity_scores else 0.0
+                    best_identity_score = best_identity_score if identity_scores else 0.0
                     identity_match = False
                     identity_status = "UNKNOWN"
 
                     if identity_available and verifier is not None and stored_embedding is not None:
-                        if identity_match_count >= 2 or avg_identity_score >= FACE_RECOGNITION_THRESHOLD:
+                        if identity_match_count >= 1 or best_identity_score >= FACE_RECOGNITION_THRESHOLD:
                             identity_match = True
                             identity_status = "SAME_PERSON"
                         else:
@@ -707,7 +822,7 @@ class Application:
                         avg_score=avg_score,
                         duration_sec=duration,
                         identity_match=identity_match if identity_status in {"SAME_PERSON", "DIFFERENT_PERSON"} else None,
-                        identity_score=avg_identity_score,
+                        identity_score=best_identity_score,
                         identity_status=identity_status,
                         verdict=verdict,
                     )
@@ -719,6 +834,9 @@ class Application:
                             verdict,
                             avg_confidence,
                             len(predictions),
+                            identity_status,
+                            best_identity_score,
+
                             identity_status,
                             avg_identity_score,
                         )
