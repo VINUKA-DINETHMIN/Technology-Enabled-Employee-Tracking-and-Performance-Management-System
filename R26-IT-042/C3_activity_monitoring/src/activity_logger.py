@@ -218,6 +218,7 @@ class ActivityLogger:
         self._screenshot_trigger = screenshot_trigger
         self._log_interval = log_interval
         self._high_risk_consecutive = 0
+        self._model_guard_alert_sent = False
 
         # Lazy-load encryptor
         self._encryptor = None
@@ -285,8 +286,10 @@ class ActivityLogger:
         fv["active_task_title"] = active_task_title
 
         # ── Score anomaly ─────────────────────────────────────────────
+        model_loaded = bool(self._engine.is_loaded)
+        model_score = None
         risk_score = 0.0
-        if self._engine.is_loaded:
+        if model_loaded:
             import numpy as np
             numeric_fields = [
                 "mean_dwell_time", "std_dwell_time", "mean_flight_time",
@@ -297,10 +300,16 @@ class ActivityLogger:
                 "wifi_ssid_match", "device_fingerprint_match", "face_liveness_score",
             ]
             arr = np.array([_safe_float(fv.get(f, 0.0), 0.0) for f in numeric_fields], dtype=np.float32)
-            risk_score = self._engine.score(arr)
+            model_score = float(self._engine.score(arr))
+            risk_score = model_score
 
-        # Add deterministic policy penalties after model score.
-        risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
+        # Add deterministic policy penalties only when model score is available.
+        # This prevents silent geo-only fallback patterns (for example fixed 8.0)
+        # if the model failed to load in a running process.
+        if model_score is not None:
+            risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
+        else:
+            self._warn_model_unavailable_once()
 
         productivity_score = _risk_to_productivity(
             risk_score,
@@ -313,6 +322,8 @@ class ActivityLogger:
 
         # ── Determine contributing factors and label ───────────────────
         factors = _get_contributing_factors(fv, risk_score)
+        if model_score is None:
+            factors.append("model_unavailable")
         label = _risk_to_label(risk_score)
         alert_triggered = risk_score >= _HARD_WARN
 
@@ -336,6 +347,8 @@ class ActivityLogger:
             "session_id": self._session_id,
             "feature_vector": encrypted_fv,
             "composite_risk_score": round(risk_score, 2),
+            "anomaly_model_loaded": model_loaded,
+            "anomaly_model_score": None if model_score is None else round(_safe_float(model_score, 0.0), 2),
             "productivity_score": productivity_score,
             "idle_ratio": round(_safe_float(fv.get("idle_ratio", 0.0), 0.0), 4),
             "app_switch_frequency": round(_safe_float(fv.get("app_switch_frequency", 0.0), 0.0), 3),
@@ -419,6 +432,27 @@ class ActivityLogger:
             "ActivityLog saved — user=%s risk=%.1f label=%s",
             self._user_id, risk_score, label,
         )
+
+    def _warn_model_unavailable_once(self) -> None:
+        """Emit a one-time warning/alert when anomaly model is unavailable."""
+        if self._model_guard_alert_sent:
+            return
+        self._model_guard_alert_sent = True
+        logger.error(
+            "Anomaly model unavailable for user=%s session=%s; risk fallback blocked.",
+            self._user_id,
+            self._session_id,
+        )
+        if self._alert_sender is not None:
+            try:
+                self._alert_sender.send_alert(
+                    user_id=self._user_id,
+                    risk_score=0.0,
+                    factors=["model_unavailable"],
+                    session_id=self._session_id,
+                )
+            except Exception as exc:
+                logger.warning("Model-unavailable alert send error: %s", exc)
 
     def _save_document(self, doc: dict) -> None:
         """Save document to MongoDB or enqueue offline."""

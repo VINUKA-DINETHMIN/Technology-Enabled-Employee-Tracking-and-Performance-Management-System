@@ -148,7 +148,14 @@ def start_monitoring(
     )
     offline_queue = OfflineQueue()
     anomaly_engine = AnomalyEngine()
-    anomaly_engine.load_model()
+    model_loaded = anomaly_engine.load_model()
+    if not model_loaded:
+        logger.error(
+            "Anomaly model/scaler failed to load for user=%s session=%s. "
+            "ActivityLogger will run with model guard enabled.",
+            user_id,
+            session_id,
+        )
 
     # Wire keyboard and mouse activity → idle detector
     _orig_kb_on_press = keyboard._listener  # patched after start

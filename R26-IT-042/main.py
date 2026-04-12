@@ -274,6 +274,7 @@ class Application:
         root = ctk.CTk()
         root.withdraw()
         root.protocol("WM_DELETE_WINDOW", self._shutdown)
+        root._app = self
         self._root = root
 
         panel = EmployeePanel(
@@ -281,9 +282,11 @@ class Application:
             employee=self._employee,
             db=self._db_client,
             session_id=self._session_id,
-            break_manager=getattr(self, "_break_manager", None)
+            break_manager=getattr(self, "_break_manager", None),
+            alert_sender=self._alert_sender,
         )
         self._employee_panel = panel
+        self._bind_break_manager_to_panel_async(panel)
         # Add a helper to the root so panel can call it
         root.show_login = self._restart_at_login
         panel.protocol("WM_DELETE_WINDOW", self._shutdown)
@@ -292,6 +295,24 @@ class Application:
         self._log_attendance_signin()
 
         root.mainloop()
+
+    def _bind_break_manager_to_panel_async(self, panel) -> None:
+        """Bind break manager to the panel even when C3 starts slightly later."""
+        def _worker() -> None:
+            # Retry for a short period because C3 startup is asynchronous.
+            deadline = time.time() + 60.0
+            while time.time() < deadline and not self._shutdown_event.is_set():
+                bm = getattr(self, "_break_manager", None)
+                if bm is not None:
+                    try:
+                        if panel is not None and panel.winfo_exists():
+                            panel.after(0, lambda b=bm: panel.set_break_manager(b))
+                    except Exception:
+                        pass
+                    return
+                time.sleep(0.5)
+
+        threading.Thread(target=_worker, daemon=True, name="BreakManager-Binder").start()
 
     def _log_attendance_signin(self) -> None:
         try:
@@ -337,13 +358,29 @@ class Application:
                     e_t = datetime.strptime(now_str, "%H:%M:%S")
                     diff = e_t - s_t
                     duration = str(diff).split(".")[0] # HH:MM:SS
+
+                    # Derive final attendance status with overtime support.
+                    sign_in_cutoff = datetime.strptime("09:15:00", "%H:%M:%S").time()
+                    early_departure_cutoff = datetime.strptime("17:00:00", "%H:%M:%S").time()
+                    overtime_cutoff = datetime.strptime("18:00:00", "%H:%M:%S").time()
+                    sign_in_time = s_t.time()
+                    sign_out_time = e_t.time()
+
+                    if sign_out_time >= overtime_cutoff:
+                        final_status = "Overtime"
+                    elif sign_out_time < early_departure_cutoff:
+                        final_status = "Early Departure"
+                    elif sign_in_time > sign_in_cutoff:
+                        final_status = "Late"
+                    else:
+                        final_status = "On Time"
                     
                     col.update_one(
                         {"employee_id": self._user_id, "date": today},
                         {"$set": {
                             "signout": now_str,
                             "duration": duration,
-                            "status": "Offline"
+                            "status": final_status
                         }}
                     )
         except Exception as exc:
