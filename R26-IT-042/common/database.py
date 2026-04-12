@@ -54,6 +54,7 @@ KNOWN_COLLECTIONS: set[str] = {
     "commands",
     "camera_streams",
     "screen_streams",
+    "antispoofing_checks",
 }
 
 

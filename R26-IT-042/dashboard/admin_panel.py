@@ -270,6 +270,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         self._emp_id = employee.get("employee_id", "?")
         self._detail_closed = False
         self._ss_poll_after_id = None
+        self._screenshot_widgets = {}  # {timestamp: widget_frame} - Track existing screenshot widgets
         emp_id = employee.get("employee_id", "?")
         name = employee.get("full_name", emp_id)
 
@@ -360,6 +361,11 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             tracker.show()
         except Exception as exc:
             logger.debug("App usage tracker load error: %s", exc)
+
+        # ─────────────────────────────────────────────────
+        # Anti-Spoofing Verification
+        # ─────────────────────────────────────────────────
+        self._render_antispoofing_check(body, emp_id)
 
         # Alert history
         alerts = self._get_alerts(emp_id)
@@ -515,9 +521,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkButton(ctrl_frame, text="Live Screen", fg_color="#3b82f6", hover_color="#2563eb", height=38, 
                       command=lambda: LiveScreenViewer(self, emp_id, self._db)).pack(side="left", expand=True, padx=4)
 
-        # Keep screenshot panel synced without reopening the detail window.
-        self.protocol("WM_DELETE_WINDOW", self._on_close_detail)
-        self._schedule_screenshot_refresh(initial_delay_ms=1500)
+    def _schedule_screenshot_refresh(self, initial_delay_ms: int = 10000) -> None:  # Increased from 1500 to 10000
+        if self._detail_closed:
+            return
+        try:
+            if self._ss_poll_after_id is not None:
+                self.after_cancel(self._ss_poll_after_id)
+        except Exception:
+            pass
+        self._schedule_screenshot_refresh(initial_delay_ms=10000)  # Poll every 10 seconds instead of 3
 
     def _on_close_detail(self) -> None:
         self._detail_closed = True
@@ -528,7 +540,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             pass
         self.destroy()
 
-    def _schedule_screenshot_refresh(self, initial_delay_ms: int = 3000) -> None:
+    def _schedule_screenshot_refresh(self, initial_delay_ms: int = 10000) -> None:  # Increased from 3000 to 10000
         if self._detail_closed:
             return
         try:
@@ -545,7 +557,7 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             self._render_screenshots(self._ssf, self._emp_id)
         except Exception:
             pass
-        self._ss_poll_after_id = self.after(3000, self._poll_screenshots)
+        self._ss_poll_after_id = self.after(10000, self._poll_screenshots)  # Poll every 10 seconds instead of 3
 
     def _force_screenshot(self, emp_id: str) -> None:
         if not self._db or not self._db.is_connected: return
@@ -582,49 +594,87 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             messagebox.showerror("Failed", "Check SMTP settings in .env.")
 
     def _render_screenshots(self, parent_frame: ctk.CTkFrame, emp_id: str) -> None:
-        """Fetch and render screenshoot list rows."""
-        for w in parent_frame.winfo_children():
-            w.destroy()
-
-        ctk.CTkLabel(parent_frame, text="Recent Screenshots", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT).pack(anchor="w", padx=16, pady=(12, 4))
+        """Fetch and render screenshot list rows with delta updates."""
+        # Get current screenshots
         screens = self._get_screenshots(emp_id)
+        current_timestamps = {s.get("timestamp", "") for s in screens[:5]}
+        existing_timestamps = set(self._screenshot_widgets.keys())
+
+        # Remove widgets for screenshots that no longer exist
+        for ts in existing_timestamps - current_timestamps:
+            if ts in self._screenshot_widgets:
+                try:
+                    self._screenshot_widgets[ts].destroy()
+                except Exception:
+                    pass
+                del self._screenshot_widgets[ts]
+
+        # Ensure header exists (only create once)
+        if not hasattr(self, '_ss_header_label'):
+            self._ss_header_label = ctk.CTkLabel(parent_frame, text="Recent Screenshots", font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT)
+            self._ss_header_label.pack(anchor="w", padx=16, pady=(12, 4))
+
+        # Handle empty state
         if not screens:
-            ctk.CTkLabel(parent_frame, text="No screenshots captured yet.", font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(anchor="w", padx=16, pady=(0, 12))
+            if not hasattr(self, '_ss_empty_label'):
+                self._ss_empty_label = ctk.CTkLabel(parent_frame, text="No screenshots captured yet.", font=ctk.CTkFont(size=11), text_color=C_MUTED)
+                self._ss_empty_label.pack(anchor="w", padx=16, pady=(0, 12))
         else:
+            # Remove empty label if it exists
+            if hasattr(self, '_ss_empty_label'):
+                try:
+                    self._ss_empty_label.destroy()
+                except Exception:
+                    pass
+                delattr(self, '_ss_empty_label')
+
+            # Add/update screenshot widgets
             for s in screens[:5]:
-                row = ctk.CTkFrame(parent_frame, fg_color=C_BORDER, corner_radius=8)
-                row.pack(fill="x", padx=16, pady=3)
-                reason = s.get("trigger_reason", "manual").title()
-                risk = s.get("risk_score_at_capture", 0.0)
-                ctk.CTkLabel(row, text=f"📸 {reason}", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
-                ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
-                
-                # Buttons
-                path = s.get("file_path", "")
-                b64 = s.get("image_base64")
+                ts = s.get("timestamp", "")
+                if ts not in self._screenshot_widgets:
+                    # Create new widget
+                    row = ctk.CTkFrame(parent_frame, fg_color=C_BORDER, corner_radius=8)
+                    row.pack(fill="x", padx=16, pady=3)
+                    self._create_screenshot_row_content(row, s, emp_id)
+                    self._screenshot_widgets[ts] = row
+                # Existing widgets are not updated (timestamps don't change, so no need to refresh)
 
-                # Delete (🗑️)
-                ctk.CTkButton(row, text="🗑️", width=32, height=24, fg_color="#450a0a", hover_color=C_RED, 
-                              font=ctk.CTkFont(size=12), command=lambda sc=s: self._delete_screenshot(sc)).pack(side="right", padx=(8, 4))
+        # Ensure footer spacing
+        if not hasattr(self, '_ss_footer_frame'):
+            self._ss_footer_frame = ctk.CTkFrame(parent_frame, fg_color="transparent", height=8)
+            self._ss_footer_frame.pack()
 
-                # Folder Opener
-                if path:
-                    ctk.CTkButton(row, text="📁", width=28, height=24, fg_color=C_SIDEBAR, hover_color=C_BORDER, 
-                                  font=ctk.CTkFont(size=10), command=lambda p=path: self._open_file(p)).pack(side="right", padx=2)
-                
-                # View Local
-                if path and os.path.exists(path):
-                    ctk.CTkButton(row, text="View Local", width=70, height=24, fg_color=C_BLUE, hover_color="#2563eb", 
-                                  font=ctk.CTkFont(size=10), command=lambda p=path: ScreenshotViewer(self, p, is_path=True, user_id=emp_id)).pack(side="right", padx=4)
+    def _create_screenshot_row_content(self, row: ctk.CTkFrame, s: dict, emp_id: str) -> None:
+        """Create the content for a screenshot row widget."""
+        reason = s.get("trigger_reason", "manual").title()
+        risk = s.get("risk_score_at_capture", 0.0)
+        ctk.CTkLabel(row, text=f"📸 {reason}", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left", padx=8, pady=6)
+        ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
 
-                # View Cloud
-                if b64:
-                    ctk.CTkButton(row, text="View Cloud", width=70, height=24, fg_color=C_TEAL, hover_color=C_TEAL_D, 
-                                  font=ctk.CTkFont(size=10), command=lambda b=b64: ScreenshotViewer(self, b)).pack(side="right", padx=4)
-                
-                ctk.CTkLabel(row, text=_fmt_time(s.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=4)
-            
-            ctk.CTkFrame(parent_frame, fg_color="transparent", height=8).pack()
+        # Buttons
+        path = s.get("file_path", "")
+        b64 = s.get("image_base64")
+
+        # Delete (🗑️)
+        ctk.CTkButton(row, text="🗑️", width=32, height=24, fg_color="#450a0a", hover_color=C_RED,
+                      font=ctk.CTkFont(size=12), command=lambda sc=s: self._delete_screenshot(sc)).pack(side="right", padx=(8, 4))
+
+        # Folder Opener
+        if path:
+            ctk.CTkButton(row, text="📁", width=28, height=24, fg_color=C_SIDEBAR, hover_color=C_BORDER,
+                          font=ctk.CTkFont(size=10), command=lambda p=path: self._open_file(p)).pack(side="right", padx=2)
+
+        # View Local
+        if path and os.path.exists(path):
+            ctk.CTkButton(row, text="View Local", width=70, height=24, fg_color=C_BLUE, hover_color="#2563eb",
+                          font=ctk.CTkFont(size=10), command=lambda p=path: ScreenshotViewer(self, p, is_path=True, user_id=emp_id)).pack(side="right", padx=4)
+
+        # View Cloud
+        if b64:
+            ctk.CTkButton(row, text="View Cloud", width=70, height=24, fg_color=C_TEAL, hover_color=C_TEAL_D,
+                          font=ctk.CTkFont(size=10), command=lambda b=b64: ScreenshotViewer(self, b)).pack(side="right", padx=4)
+
+        ctk.CTkLabel(row, text=_fmt_time(s.get("timestamp", "")), text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="right", padx=4)
 
     def _delete_screenshot(self, screenshot: dict) -> None:
         """Confirm and delete a screenshot from DB and Disk."""
@@ -666,7 +716,22 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         try:
             col = self._db.get_collection("activity_logs")
             if col is not None:
-                return col.find_one({"user_id": emp_id}, sort=[("timestamp", -1)])
+                # Optimized: Only fetch essential fields for dashboard display
+                projection = {
+                    "_id": 0,
+                    "composite_risk_score": 1,
+                    "productivity_score": 1,
+                    "top_app": 1,
+                    "idle_ratio": 1,
+                    "contributing_factors": 1,
+                    "in_break": 1,
+                    "active_task_title": 1,
+                    "app_switch_frequency": 1,
+                    "active_app_entropy": 1,
+                    "total_focus_duration": 1,
+                    "timestamp": 1
+                }
+                return col.find_one({"user_id": emp_id}, projection, sort=[("timestamp", -1)])
         except Exception: pass
         return None
 
@@ -674,7 +739,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         try:
             col = self._db.get_collection("alerts")
             if col is not None:
-                return list(col.find({"user_id": emp_id}, {"_id": 0}).sort("timestamp", -1).limit(10))
+                # Optimized: Only fetch essential fields for alert display
+                projection = {
+                    "_id": 0,
+                    "level": 1,
+                    "factors": 1,
+                    "timestamp": 1,
+                    "risk_score": 1
+                }
+                return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(10))
         except Exception: pass
         return []
 
@@ -690,16 +763,169 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         try:
             col = self._db.get_collection("screenshots")
             if col is not None:
-                return list(col.find({"user_id": emp_id}, {"_id": 0}).sort("timestamp", -1).limit(10))
+                # Optimized: Only fetch essential fields, exclude heavy base64 data initially
+                projection = {
+                    "_id": 0,
+                    "user_id": 1,
+                    "timestamp": 1,
+                    "image_path": 1,  # For local file access
+                    "thumbnail_base64": 1,  # Smaller than full image
+                    "metadata": 1
+                }
+                return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(5))  # Reduced from 10 to 5
         except Exception: pass
         return []
+
+    def _render_antispoofing_check(self, parent, emp_id: str) -> None:
+        """Render the anti-spoofing verification section."""
+        try:
+            asf = ctk.CTkFrame(parent, fg_color=C_CARD, corner_radius=12)
+            asf.pack(fill="x", pady=(0, 12))
+
+            # Header with button
+            header = ctk.CTkFrame(asf, fg_color="transparent")
+            header.pack(fill="x", padx=16, pady=(12, 4))
+            ctk.CTkLabel(
+                header, text="Anti-Spoofing Verification",
+                font=ctk.CTkFont(size=12, weight="bold"), text_color=C_TEXT,
+            ).pack(side="left")
+
+            # Trigger button
+            trigger_btn = ctk.CTkButton(
+                header,
+                text="🔍 Verify Face",
+                width=140, height=28,
+                fg_color=C_TEAL, hover_color=C_TEAL_D,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda: self._trigger_antispoofing_check(emp_id),
+            )
+            trigger_btn.pack(side="right")
+            self._antispoofing_btn = trigger_btn
+
+            # Result container
+            self._antispoofing_result_frame = ctk.CTkFrame(asf, fg_color="transparent")
+            self._antispoofing_result_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+            # Load and display latest result
+            self._update_antispoofing_display(asf, emp_id)
+
+            ctk.CTkFrame(asf, fg_color="transparent", height=8).pack()
+
+        except Exception as exc:
+            logger.debug("Anti-spoofing UI render error: %s", exc)
+
+    def _trigger_antispoofing_check(self, emp_id: str) -> None:
+        """Send antispoofing check command to employee device."""
+        try:
+            col = self._db.get_collection("commands")
+            if col is None:
+                messagebox.showerror("Error", "Commands collection unavailable.")
+                return
+
+            cmd = {
+                "command_id": str(uuid.uuid4()),
+                "target_user_id": emp_id,
+                "command_type": "start_antispoofing_check",
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat(),
+                "expires_at": (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+            }
+            col.insert_one(cmd)
+
+            # Show status message
+            messagebox.showinfo(
+                "Verification Initiated",
+                f"Anti-spoofing check started for {emp_id}.\n\n"
+                "The employee will see a camera prompt.\n"
+                "Results will appear below in 10-15 seconds."
+            )
+
+            # Schedule refresh
+            self.after(3000, lambda: self._update_antispoofing_display(
+                self._antispoofing_result_frame, emp_id
+            ))
+
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to trigger check: {exc}")
+
+    def _update_antispoofing_display(self, parent, emp_id: str) -> None:
+        """Update antispoofing result display."""
+        try:
+            # Clear previous results
+            for w in self._antispoofing_result_frame.winfo_children():
+                w.destroy()
+
+            col = self._db.get_collection("antispoofing_checks")
+            if col is None:
+                return
+
+            result = col.find_one({"user_id": emp_id}, sort=[("timestamp", -1)])
+
+            if result is None:
+                ctk.CTkLabel(
+                    self._antispoofing_result_frame,
+                    text="No checks yet. Click 'Verify Face' to start.",
+                    text_color=C_MUTED, font=ctk.CTkFont(size=11),
+                ).pack(anchor="w", pady=4)
+                return
+
+            # Display result
+            verdict = result.get("verdict", "UNKNOWN")
+            is_real = result.get("is_real", False)
+            confidence = float(result.get("confidence", 0.0) or 0.0)
+            frames = int(result.get("frame_count", 0) or 0)
+            avg_score = float(result.get("avg_score", 0.5) or 0.5)
+            duration = float(result.get("check_duration_sec", 0.0) or 0.0)
+
+            # Color based on verdict
+            verdict_color = C_GREEN if is_real else C_RED
+            verdict_icon = "✓ REAL" if is_real else "✗ FAKE"
+
+            # Result box
+            result_box = ctk.CTkFrame(self._antispoofing_result_frame, fg_color=C_BORDER, corner_radius=8)
+            result_box.pack(fill="x", pady=4)
+
+            # Verdict
+            ctk.CTkLabel(
+                result_box, text=verdict_icon,
+                font=ctk.CTkFont(size=16, weight="bold"), text_color=verdict_color,
+            ).pack(anchor="w", padx=12, pady=(8, 0))
+
+            # Details
+            details_text = (
+                f"Confidence: {confidence:.1%} | "
+                f"Frames: {frames} | "
+                f"Duration: {duration:.1f}s"
+            )
+            ctk.CTkLabel(
+                result_box, text=details_text,
+                font=ctk.CTkFont(size=10), text_color=C_MUTED,
+            ).pack(anchor="w", padx=12, pady=(2, 8))
+
+            # Timestamp
+            ts_text = _fmt_time(result.get("timestamp", ""))
+            ctk.CTkLabel(
+                result_box, text=f"Last checked: {ts_text}",
+                font=ctk.CTkFont(size=9), text_color=C_MUTED,
+            ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        except Exception as exc:
+            logger.debug("Update antispoofing display error: %s", exc)
 
     def _get_activity_logs(self, emp_id: str) -> list:
         try:
             col = self._db.get_collection("activity_logs")
             if col is not None:
+                # Optimized: Time-filtered query (last 7 days) + essential fields only
+                seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+                query = {
+                    "user_id": emp_id,
+                    "timestamp": {"$gte": seven_days_ago}
+                }
+
+                # Reduced projection: Only fields needed for UI display
                 projection = {
-                    "_id": 1,
+                    "_id": 1,  # Keep for delete operations
                     "timestamp": 1,
                     "composite_risk_score": 1,
                     "productivity_score": 1,
@@ -708,23 +934,13 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                     "label": 1,
                     "contributing_factors": 1,
                     "location_mode": 1,
-                    "location_hint": 1,
-                    "location_confidence": 1,
                     "city": 1,
-                    "region": 1,
                     "country": 1,
-                    "isp": 1,
-                    "geolocation_deviation": 1,
-                    "inside_office_geofence": 1,
-                    "vpn_proxy_detected": 1,
-                    "hosting_detected": 1,
-                    "location_trust_score": 1,
-                    "office_radius_km": 1,
                     "in_break": 1,
                     "break_type": 1,
-                    "alert_triggered": 1,
+                    "alert_triggered": 1
                 }
-                return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(50))
+                return list(col.find(query, projection).sort("timestamp", -1).limit(20))  # Reduced from 50 to 20
         except Exception:
             pass
         return []
@@ -1312,6 +1528,7 @@ class AdminPanel(ctk.CTk):
         self._grid_scroll.pack(fill="both", expand=True)
         
         self._grid_items = {} # {user_id: {frame, label, status_label}}
+        self._image_cache = {} # {user_id: {image, timestamp, ctk_image}} - Cache for 30 seconds
         
         return frame
 
@@ -1327,18 +1544,49 @@ class AdminPanel(ctk.CTk):
             if col is None: return
             streams = list(col.find({"status": "streaming"}))
             
-            # Process images in background thread
+            # Process images in background thread with caching
             processed = []
+            current_time = time.time()
+            
             for s in streams:
                 uid = s["user_id"]
                 img = None
+                ctk_img = None
                 b64 = s.get("image_base64")
-                if b64:
+                timestamp = s.get("timestamp", "?")
+                
+                # Check cache (valid for 30 seconds)
+                cache_key = f"{uid}_{hash(b64) if b64 else 'no_image'}"  # Use hash of b64 as key
+                cached = self._image_cache.get(cache_key)
+                if cached and (current_time - cached["timestamp"]) < 30:
+                    img = cached["pil_image"]
+                    ctk_img = cached["ctk_image"]
+                elif b64:
                     try:
                         img_bytes = base64.b64decode(b64)
                         img = Image.open(io.BytesIO(img_bytes))
+                        # Cache the processed image
+                        self._image_cache[cache_key] = {
+                            "pil_image": img,
+                            "ctk_image": None,  # Will be created in UI thread
+                            "timestamp": current_time
+                        }
                     except Exception: pass
-                processed.append({"user_id": uid, "image": img, "timestamp": s.get("timestamp", "?")})
+                
+                processed.append({
+                    "user_id": uid, 
+                    "image": img, 
+                    "ctk_image": ctk_img,
+                    "timestamp": timestamp,
+                    "cache_key": cache_key  # Pass cache key to UI thread
+                })
+            
+            # Clean old cache entries (keep cache size reasonable)
+            if len(self._image_cache) > 20:  # Max 20 cached images
+                oldest_keys = sorted(self._image_cache.keys(), 
+                                   key=lambda k: self._image_cache[k]["timestamp"])[:10]
+                for key in oldest_keys:
+                    del self._image_cache[key]
             
             self.after(0, lambda: self._update_live_grid_ui(processed))
         except Exception: pass
@@ -1370,9 +1618,18 @@ class AdminPanel(ctk.CTk):
 
             if p["image"]:
                 img = p["image"]
-                photo = ctk.CTkImage(light_image=img, dark_image=img, size=(340, 180))
-                self._grid_items[uid]["label"].configure(image=photo, text="")
-                self._grid_items[uid]["label"]._image = photo
+                ctk_img = p.get("ctk_image")
+                
+                if ctk_img is None:
+                    # Create new CTkImage if not cached
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(340, 180))
+                    # Update cache with CTkImage
+                    cache_key = f"{uid}_{p.get('cache_key', '')}"
+                    if cache_key in self._image_cache:
+                        self._image_cache[cache_key]["ctk_image"] = ctk_img
+                
+                self._grid_items[uid]["label"].configure(image=ctk_img, text="")
+                self._grid_items[uid]["label"]._image = ctk_img
                 self._grid_items[uid]["status"].configure(text=f"Live • Last sync: {p['timestamp'][-8:]}")
 
     def _switch_tab(self, tab_id: str) -> None:
@@ -1460,8 +1717,12 @@ class AdminPanel(ctk.CTk):
             high_risk = activity_col.count_documents({"composite_risk_score": {"$gte": 75}}) if activity_col is not None else 0
             self.after(0, lambda v=high_risk: self._card_highrisk.set_value(str(v)))
 
-            # Avg productivity (last hour)
-            pipeline = [{"$group": {"_id": None, "avg": {"$avg": "$productivity_score"}}}]
+            # Avg productivity (last 24 hours only - optimized)
+            yesterday = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            pipeline = [
+                {"$match": {"timestamp": {"$gte": yesterday.isoformat()}}},
+                {"$group": {"_id": None, "avg": {"$avg": "$productivity_score"}}}
+            ]
             avg_result = list(activity_col.aggregate(pipeline)) if activity_col is not None else []
             avg_prod = avg_result[0]["avg"] if avg_result else 0.0
             self._card_avg_prod.set_value(f"{avg_prod:.0f}%")
