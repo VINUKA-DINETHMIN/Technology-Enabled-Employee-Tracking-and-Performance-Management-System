@@ -900,7 +900,26 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             ctk.CTkLabel(
                 result_box, text=details_text,
                 font=ctk.CTkFont(size=10), text_color=C_MUTED,
-            ).pack(anchor="w", padx=12, pady=(2, 8))
+            ).pack(anchor="w", padx=12, pady=(2, 4))
+
+            identity_status = result.get("identity_status", "UNKNOWN")
+            identity_score = float(result.get("identity_score", 0.0) or 0.0)
+            identity_text = ""
+            if identity_status == "SAME_PERSON":
+                identity_text = f"Identity: Same person ({identity_score:.2f})"
+            elif identity_status == "DIFFERENT_PERSON":
+                identity_text = f"Identity: Different person ({identity_score:.2f})"
+            elif identity_status == "NO_TEMPLATE":
+                identity_text = "Identity: No stored face template available"
+            elif identity_status == "VERIFIER_UNAVAILABLE":
+                identity_text = "Identity: Verifier unavailable"
+            else:
+                identity_text = "Identity: Unknown"
+
+            ctk.CTkLabel(
+                result_box, text=identity_text,
+                font=ctk.CTkFont(size=10), text_color=C_MUTED,
+            ).pack(anchor="w", padx=12, pady=(0, 8))
 
             # Timestamp
             ts_text = _fmt_time(result.get("timestamp", ""))
