@@ -652,8 +652,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
 
         # Buttons
-        path = s.get("file_path", "")
-        b64 = s.get("image_base64")
+        path = s.get("file_path") or s.get("image_path") or ""
+        b64 = s.get("image_base64") or s.get("thumbnail_base64")
 
         # Delete (🗑️)
         ctk.CTkButton(row, text="🗑️", width=32, height=24, fg_color="#450a0a", hover_color=C_RED,
@@ -693,12 +693,13 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 res = col.delete_one({"user_id": emp_id, "timestamp": screenshot.get("timestamp")})
                 if res.deleted_count == 0:
                     # Try by filename if path exists
-                    path = screenshot.get("file_path")
+                    path = screenshot.get("file_path") or screenshot.get("image_path")
                     if path:
                         col.delete_one({"file_path": path})
+                        col.delete_one({"image_path": path})
 
             # 2. Delete from Filesystem
-            path = screenshot.get("file_path")
+            path = screenshot.get("file_path") or screenshot.get("image_path")
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
@@ -763,13 +764,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         try:
             col = self._db.get_collection("screenshots")
             if col is not None:
-                # Optimized: Only fetch essential fields, exclude heavy base64 data initially
+                # Optimized: Only fetch essential fields, but keep both current and legacy field names.
                 projection = {
                     "_id": 0,
                     "user_id": 1,
                     "timestamp": 1,
-                    "image_path": 1,  # For local file access
-                    "thumbnail_base64": 1,  # Smaller than full image
+                    "file_path": 1,
+                    "image_path": 1,
+                    "image_base64": 1,
+                    "thumbnail_base64": 1,
                     "metadata": 1
                 }
                 return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(5))  # Reduced from 10 to 5

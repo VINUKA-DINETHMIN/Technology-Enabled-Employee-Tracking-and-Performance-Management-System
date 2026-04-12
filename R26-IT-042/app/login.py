@@ -842,6 +842,7 @@ class LoginWindow(ctk.CTk):
             office_radius_km = 25.0
             location_trust_score = 0.0
             wifi_ssid_hash = ""
+            wifi_ssid_match = False
             device_fingerprint = ""
             try:
                 from C3_activity_monitoring.src.geo_context import get_geo_context, haversine_km
@@ -876,6 +877,15 @@ class LoginWindow(ctk.CTk):
                 office = (policy_doc or {}).get("office") or {}
                 risk_cfg = (policy_doc or {}).get("risk") or {}
 
+                wifi_ssid_hash = self._get_wifi_ssid_hash()
+                office_wifi_hash = str(
+                    office.get("wifi_ssid_hash")
+                    or office.get("ssid_hash")
+                    or ""
+                ).strip()
+                if wifi_ssid_hash and office_wifi_hash:
+                    wifi_ssid_match = wifi_ssid_hash == office_wifi_hash
+
                 try:
                     office_radius_km = float(office.get("radius_km", 25.0) or 25.0)
                 except Exception:
@@ -895,6 +905,9 @@ class LoginWindow(ctk.CTk):
                 # Set location mode based on resolved geofence facts first.
                 if inside_office_geofence is True:
                     location_mode = "office"
+                    # Backward-compatible fallback until office Wi-Fi hash is configured.
+                    if not office_wifi_hash and wifi_ssid_hash:
+                        wifi_ssid_match = True
                 elif inside_office_geofence is False:
                     if work_location in {"home", "hybrid"}:
                         location_mode = work_location
@@ -953,6 +966,7 @@ class LoginWindow(ctk.CTk):
                 "office_radius_km": office_radius_km,
                 "location_trust_score": location_trust_score,
                 "wifi_ssid_hash": wifi_ssid_hash,
+                "wifi_ssid_match": wifi_ssid_match,
                 "device_fingerprint": device_fingerprint,
                 "face_liveness_score": liveness_score,
                 "mfa_verified": True,
@@ -981,6 +995,8 @@ class LoginWindow(ctk.CTk):
             self._current_employee["geolocation_resolved"] = geolocation_resolved
             self._current_employee["office_radius_km"] = office_radius_km
             self._current_employee["location_trust_score"] = location_trust_score
+            self._current_employee["wifi_ssid_hash"] = wifi_ssid_hash
+            self._current_employee["wifi_ssid_match"] = wifi_ssid_match
 
             col = self._db.get_collection("sessions")
             if col is not None:
@@ -1038,6 +1054,64 @@ class LoginWindow(ctk.CTk):
         import hashlib, platform, uuid as _uuid
         parts = [platform.node(), platform.machine(), str(_uuid.getnode())]
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+    def _get_wifi_ssid_hash(self) -> str:
+        """Return a short hash of the currently connected Wi-Fi SSID (best effort)."""
+        import hashlib
+        import platform
+        import subprocess
+
+        ssid = ""
+        try:
+            os_name = platform.system()
+            if os_name == "Windows":
+                result = subprocess.run(
+                    ["netsh", "wlan", "show", "interfaces"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    k = key.strip().lower()
+                    if k == "ssid" and "bssid" not in k:
+                        candidate = value.strip()
+                        if candidate and candidate.lower() != "n/a":
+                            ssid = candidate
+                            break
+            elif os_name == "Darwin":
+                result = subprocess.run(
+                    [
+                        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
+                        "-I",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if "SSID:" in line and "BSSID" not in line:
+                        ssid = line.split(":", 1)[1].strip()
+                        break
+            else:
+                result = subprocess.run(
+                    ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if line.startswith("yes:"):
+                        ssid = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            ssid = ""
+
+        if not ssid:
+            return ""
+        return hashlib.sha256(ssid.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
     # ------------------------------------------------------------------
     # Helpers

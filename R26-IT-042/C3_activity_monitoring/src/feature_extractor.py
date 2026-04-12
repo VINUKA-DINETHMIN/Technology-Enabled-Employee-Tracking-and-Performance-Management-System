@@ -103,7 +103,7 @@ class FeatureExtractor:
         self,
         in_break: bool = False,
         break_type: Optional[str] = None,
-        geolocation_deviation: float = 0.0,
+        geolocation_deviation: Optional[float] = None,
     ) -> dict:
         """
         Produce one complete 27-field feature vector.
@@ -115,7 +115,7 @@ class FeatureExtractor:
         break_type:
             "lunch" | "short" | None
         geolocation_deviation:
-            Distance from known location in km (0.0 if not computed).
+            Distance from known location in km (None if not supplied).
 
         Returns
         -------

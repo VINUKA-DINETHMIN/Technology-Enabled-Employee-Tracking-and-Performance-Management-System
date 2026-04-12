@@ -95,6 +95,7 @@ class Application:
         self._cam_streaming = False
         self._screen_streaming = False
         self._location_mode = "unknown"
+        self._wifi_ssid_match = False
         self._current_city = "Unknown"
         self._location_context: dict = {}
 
@@ -225,6 +226,7 @@ class Application:
         self._session_id = session_id
         self._liveness_score = employee.get("face_liveness_score", 1.0)
         self._location_mode = str(employee.get("location_mode") or "unknown").lower()
+        self._wifi_ssid_match = bool(employee.get("wifi_ssid_match", False))
         self._current_city = employee.get("geo_city") or "Unknown"
         self._location_context = {
             "city": employee.get("geo_city") or "Unknown",
@@ -394,7 +396,7 @@ class Application:
                 session_id=self._session_id,
                 location_mode=self._location_mode,
                 location_context=self._location_context,
-                wifi_ssid_match=False,
+                wifi_ssid_match=self._wifi_ssid_match,
                 face_liveness_score=self._liveness_score,
             )
             try:
