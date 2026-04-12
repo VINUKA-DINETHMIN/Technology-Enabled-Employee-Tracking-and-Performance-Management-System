@@ -10,6 +10,7 @@ Features: task start/complete timer, break config popup, toast notifications.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
@@ -27,6 +28,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from common.database import MongoDBClient
+from common.alerts import AlertSender
 from config.settings import settings
 
 ctk.set_appearance_mode("dark")
@@ -225,8 +227,25 @@ class BreakConfigPopup(ctk.CTkToplevel):
     def _save(self) -> None:
         cfg = {}
         for key, ev in self._entries.items():
-            cfg[key] = {"start": ev["time_var"].get().strip(),
-                        "duration_minutes": int(ev["dur_var"].get().strip() or 15)}
+            raw_time = str(ev["time_var"].get() or "").strip().replace(".", ":")
+            if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", raw_time):
+                messagebox.showwarning("Invalid Time", f"{key.replace('_', ' ').title()} time must be HH:MM (e.g., 20:25).")
+                return
+
+            try:
+                duration_val = int(str(ev["dur_var"].get() or "").strip() or 15)
+            except Exception:
+                messagebox.showwarning("Invalid Duration", f"{key.replace('_', ' ').title()} duration must be a number.")
+                return
+
+            if duration_val <= 0:
+                messagebox.showwarning("Invalid Duration", f"{key.replace('_', ' ').title()} duration must be greater than zero.")
+                return
+
+            cfg[key] = {
+                "start": raw_time,
+                "duration_minutes": duration_val,
+            }
         try:
             from C3_activity_monitoring.src.break_manager import BreakManager
             bm = BreakManager(user_id=self._user_id)
@@ -473,6 +492,7 @@ class EmployeePanel(ctk.CTkToplevel):
         db: MongoDBClient,
         session_id: Optional[str] = None,
         break_manager=None,
+        alert_sender: Optional[AlertSender] = None,
     ) -> None:
         super().__init__(parent)
         self._emp = employee
@@ -482,7 +502,10 @@ class EmployeePanel(ctk.CTkToplevel):
         self._known_task_ids: set = set()
         self._closed = False
         self._bm = break_manager
+        self._alert_sender = alert_sender
         self._after_ids: set = set()
+        self._overtime_notified_date: str = ""
+        self._last_break_overrun_alert_ts: str = ""
 
         emp_name = employee.get("full_name", self._user_id)
         self.title(f"WorkPlus — {emp_name}")
@@ -695,8 +718,10 @@ class EmployeePanel(ctk.CTkToplevel):
 
     def _start_break_type(self, break_type: str) -> None:
         if not self._bm:
+            self._try_bind_break_manager()
+        if not self._bm:
             import tkinter.messagebox as mb
-            mb.showerror("Error", "Break manager not initialized.")
+            mb.showerror("Error", "Break manager not initialized yet. Please wait a few seconds and try again.")
             return
         try:
             if not self._bm.get_breaks():
@@ -709,6 +734,16 @@ class EmployeePanel(ctk.CTkToplevel):
     def set_break_manager(self, break_manager) -> None:
         """Bind live BreakManager after panel creation (when C3 starts async)."""
         self._bm = break_manager
+
+    def _try_bind_break_manager(self) -> None:
+        """Try to fetch a live BreakManager from the main application object."""
+        try:
+            app = getattr(self.master, "_app", None)
+            bm = getattr(app, "_break_manager", None) if app is not None else None
+            if bm is not None:
+                self._bm = bm
+        except Exception:
+            pass
 
     def _tick_session_timer(self) -> None:
         if self._closed or not self.winfo_exists(): return
@@ -854,6 +889,122 @@ class EmployeePanel(ctk.CTkToplevel):
         self._refresh_tasks()
         self._refresh_status()
         self._refresh_attendance()
+        self._check_and_notify_overtime()
+        self._check_break_overrun_alerts()
+
+    def _check_break_overrun_alerts(self) -> None:
+        """Show employee toast when a new break-overrun alert is recorded."""
+        if not self._db or not self._db.is_connected:
+            return
+        try:
+            alerts_col = self._db.get_collection("alerts")
+            if alerts_col is None:
+                return
+
+            doc = alerts_col.find_one(
+                {
+                    "user_id": self._user_id,
+                    "reason": "break_overrun",
+                    "resolved": {"$ne": True},
+                },
+                sort=[("timestamp", -1)],
+            )
+            if not doc:
+                return
+
+            ts = str(doc.get("timestamp") or "")
+            if not ts or ts == self._last_break_overrun_alert_ts:
+                return
+
+            break_type = str(doc.get("break_type") or "break")
+            msg = f"{break_type.replace('_', ' ').title()} time exceeded. Admin alerted."
+            self.after(0, lambda m=msg: ToastNotification(self, m, C_RED))
+            self._last_break_overrun_alert_ts = ts
+        except Exception:
+            return
+
+    def _check_and_notify_overtime(self) -> None:
+        """Detect live overtime and send both employee + admin alerts once per day."""
+        if not self._db or not self._db.is_connected:
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        now_hms = datetime.now().strftime("%H:%M:%S")
+        if now_hms < "18:00:00":
+            return
+
+        try:
+            att_col = self._db.get_collection("attendance_logs")
+            if att_col is None:
+                return
+
+            att_doc = att_col.find_one(
+                {"employee_id": self._user_id, "date": today},
+                {"_id": 0, "signin": 1, "signout": 1, "status": 1},
+            )
+            if not att_doc:
+                return
+            if att_doc.get("signout"):
+                return
+            if not att_doc.get("signin"):
+                return
+
+            if str(att_doc.get("status") or "").strip() != "Overtime":
+                att_col.update_one(
+                    {"employee_id": self._user_id, "date": today},
+                    {"$set": {"status": "Overtime"}},
+                )
+
+            if self._overtime_notified_date == today:
+                return
+
+            alerts_col = self._db.get_collection("alerts")
+            if alerts_col is not None:
+                existing = alerts_col.find_one(
+                    {
+                        "user_id": self._user_id,
+                        "reason": "overtime_tracking",
+                        "overtime_date": today,
+                    },
+                    {"_id": 1},
+                )
+            else:
+                existing = None
+
+            if existing is None:
+                payload = {
+                    "type": "alert",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "user_id": self._user_id,
+                    "session_id": self._session_id,
+                    "risk_score": 35.0,
+                    "level": "LOW",
+                    "factors": ["overtime"],
+                    "reason": "overtime_tracking",
+                    "overtime_date": today,
+                    "resolved": False,
+                }
+                if alerts_col is not None:
+                    alerts_col.insert_one(payload)
+
+                if self._alert_sender is not None:
+                    try:
+                        self._alert_sender.send_alert(
+                            user_id=self._user_id,
+                            risk_score=35.0,
+                            factors=["overtime"],
+                            level="LOW",
+                            session_id=self._session_id,
+                            extra={"reason": "overtime_tracking", "overtime_date": today},
+                        )
+                    except Exception:
+                        pass
+
+                self.after(0, lambda: ToastNotification(self, "Overtime started. Please wrap up or inform admin.", C_AMBER))
+
+            self._overtime_notified_date = today
+        except Exception:
+            return
 
     def _start_polling(self) -> None:
         if self._closed or not self.winfo_exists(): return
@@ -903,6 +1054,12 @@ class EmployeePanel(ctk.CTkToplevel):
 # Launch helper
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def launch_employee_panel(parent, employee: dict, db: MongoDBClient, session_id: str = None) -> EmployeePanel:
+def launch_employee_panel(
+    parent,
+    employee: dict,
+    db: MongoDBClient,
+    session_id: str = None,
+    alert_sender: Optional[AlertSender] = None,
+) -> EmployeePanel:
     """Open the employee panel window."""
-    return EmployeePanel(parent, employee, db, session_id=session_id)
+    return EmployeePanel(parent, employee, db, session_id=session_id, alert_sender=alert_sender)

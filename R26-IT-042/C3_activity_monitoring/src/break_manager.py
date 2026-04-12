@@ -310,6 +310,9 @@ class BreakManager:
         """Called when overrun threshold is exceeded."""
         logger.warning("Break overrun detected: %s", break_type)
 
+        # Notify employee locally when break limit is exceeded.
+        self._show_overrun_notice(break_type)
+
         # Resume monitoring immediately
         self.resume_monitoring()
 
@@ -421,6 +424,40 @@ class BreakManager:
                     font=ctk.CTkFont(size=12, weight="bold"),
                 ).pack(expand=True, padx=12, pady=18)
                 note.after(2200, note.destroy)
+                note.mainloop()
+            except Exception:
+                pass
+
+        threading.Thread(target=_build_notice, daemon=True).start()
+
+    def _show_overrun_notice(self, break_type: str) -> None:
+        """Show top-most warning when break time exceeded."""
+        def _build_notice():
+            try:
+                note = ctk.CTkToplevel()
+                note.title("Break Exceeded")
+                note.geometry("380x120")
+                note.resizable(False, False)
+                note.attributes("-topmost", True)
+                note.configure(fg_color="#2b1111")
+
+                msg = f"{break_type.replace('_', ' ').title()} exceeded. Please return to work."
+                ctk.CTkLabel(
+                    note,
+                    text=msg,
+                    text_color="#fecaca",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    wraplength=340,
+                ).pack(expand=True, padx=14, pady=(18, 8))
+
+                ctk.CTkLabel(
+                    note,
+                    text="Admin has been notified.",
+                    text_color="#fca5a5",
+                    font=ctk.CTkFont(size=11),
+                ).pack(pady=(0, 14))
+
+                note.after(3500, note.destroy)
                 note.mainloop()
             except Exception:
                 pass

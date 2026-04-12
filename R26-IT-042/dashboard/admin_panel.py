@@ -189,6 +189,14 @@ def _combine_due_datetime(due_date: str, due_time: str) -> str:
         return ""
 
 
+def _parse_due_datetime_local(due_date: str, due_time: str) -> Optional[datetime]:
+    """Parse due date/time in local time; return None when invalid."""
+    try:
+        return datetime.strptime(f"{due_date} {due_time}", "%Y-%m-%d %H:%M")
+    except Exception:
+        return None
+
+
 def _fmt_due_display(due_date: str, due_time: str) -> str:
     """Format due date/time as Today/Tomorrow/or full date with time."""
     date_text = str(due_date or "").strip()
@@ -652,8 +660,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         ctk.CTkLabel(row, text=f"Risk: {risk:.0f}", text_color=_risk_color(risk), font=ctk.CTkFont(size=11)).pack(side="left", padx=12)
 
         # Buttons
-        path = s.get("file_path", "")
-        b64 = s.get("image_base64")
+        path = s.get("file_path") or s.get("image_path") or ""
+        b64 = s.get("image_base64") or s.get("thumbnail_base64")
 
         # Delete (🗑️)
         ctk.CTkButton(row, text="🗑️", width=32, height=24, fg_color="#450a0a", hover_color=C_RED,
@@ -693,12 +701,13 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 res = col.delete_one({"user_id": emp_id, "timestamp": screenshot.get("timestamp")})
                 if res.deleted_count == 0:
                     # Try by filename if path exists
-                    path = screenshot.get("file_path")
+                    path = screenshot.get("file_path") or screenshot.get("image_path")
                     if path:
                         col.delete_one({"file_path": path})
+                        col.delete_one({"image_path": path})
 
             # 2. Delete from Filesystem
-            path = screenshot.get("file_path")
+            path = screenshot.get("file_path") or screenshot.get("image_path")
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
@@ -763,13 +772,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         try:
             col = self._db.get_collection("screenshots")
             if col is not None:
-                # Optimized: Only fetch essential fields, exclude heavy base64 data initially
+                # Optimized: Only fetch essential fields, but keep both current and legacy field names.
                 projection = {
                     "_id": 0,
                     "user_id": 1,
                     "timestamp": 1,
-                    "image_path": 1,  # For local file access
-                    "thumbnail_base64": 1,  # Smaller than full image
+                    "file_path": 1,
+                    "image_path": 1,
+                    "image_base64": 1,
+                    "thumbnail_base64": 1,
                     "metadata": 1
                 }
                 return list(col.find({"user_id": emp_id}, projection).sort("timestamp", -1).limit(5))  # Reduced from 10 to 5
@@ -945,14 +956,30 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 # Reduced projection: Only fields needed for UI display
                 projection = {
                     "_id": 1,  # Keep for delete operations
+                    "user_id": 1,
+                    "session_id": 1,
                     "timestamp": 1,
                     "composite_risk_score": 1,
+                    "anomaly_model_loaded": 1,
+                    "anomaly_model_score": 1,
                     "productivity_score": 1,
                     "idle_ratio": 1,
                     "top_app": 1,
                     "label": 1,
                     "contributing_factors": 1,
                     "location_mode": 1,
+                    "location_hint": 1,
+                    "geo_source": 1,
+                    "lat": 1,
+                    "lon": 1,
+                    "location_confidence": 1,
+                    "geolocation_deviation": 1,
+                    "inside_office_geofence": 1,
+                    "geolocation_resolved": 1,
+                    "location_trust_score": 1,
+                    "vpn_proxy_detected": 1,
+                    "hosting_detected": 1,
+                    "isp": 1,
                     "city": 1,
                     "country": 1,
                     "in_break": 1,
@@ -1062,13 +1089,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         in_fence = log_doc.get("inside_office_geofence")
         trust = float(log_doc.get("location_trust_score", 0.0) or 0.0)
         geo_source = str(log_doc.get("geo_source") or "unknown")
+        isp_val = str(log_doc.get("isp") or "Unknown")
+        location_mode = str(log_doc.get("location_mode") or "unknown")
         lat_val = log_doc.get("lat")
         lon_val = log_doc.get("lon")
 
-        # Backward compatibility: older activity logs may miss geo_source/coords.
+        # Backward compatibility: older activity logs may miss geo fields.
         # Try filling from the matching session record.
         try:
-            if (geo_source in {"", "unknown"} or lat_val is None or lon_val is None) and self._db and self._db.is_connected:
+            if self._db and self._db.is_connected:
                 sess_col = self._db.get_collection("sessions")
                 if sess_col is not None:
                     sess = None
@@ -1092,6 +1121,31 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                             lon_val = sess.get("lon")
                         if (loc_hint == "Unknown") and sess.get("location_hint"):
                             loc_hint = str(sess.get("location_hint"))
+                        if (isp_val == "Unknown") and sess.get("isp"):
+                            isp_val = str(sess.get("isp"))
+                        if location_mode in {"", "unknown"} and sess.get("location_mode"):
+                            location_mode = str(sess.get("location_mode"))
+
+                        if (loc_conf <= 0.0) and (sess.get("location_confidence") is not None):
+                            try:
+                                loc_conf = float(sess.get("location_confidence") or 0.0)
+                            except Exception:
+                                pass
+
+                        if (trust <= 0.0) and (sess.get("location_trust_score") is not None):
+                            try:
+                                trust = float(sess.get("location_trust_score") or 0.0)
+                            except Exception:
+                                pass
+
+                        if in_fence is None and ("inside_office_geofence" in sess):
+                            in_fence = sess.get("inside_office_geofence")
+
+                        if (not geo_resolved) and (sess.get("geolocation_resolved") is not None):
+                            geo_resolved = bool(sess.get("geolocation_resolved"))
+
+                        if geo_dev_raw is None and (sess.get("geolocation_deviation") is not None):
+                            geo_dev_raw = sess.get("geolocation_deviation")
         except Exception:
             pass
 
@@ -1122,12 +1176,12 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
             f"Label: {str(log_doc.get('label', 'normal')).replace('_', ' ').title()}",
             f"Top App: {log_doc.get('top_app', '-')}",
             f"Idle Ratio: {float(log_doc.get('idle_ratio', 0.0) or 0.0):.3f}",
-            f"Location: {log_doc.get('location_mode', 'unknown')}",
+            f"Location: {location_mode}",
             f"Estimated Place: {loc_hint}",
             f"Geo Source: {geo_source}",
             f"Coordinates: {coords}",
             f"Location Confidence: {loc_conf:.2f}",
-            f"ISP: {log_doc.get('isp', 'Unknown')}",
+            f"ISP: {isp_val}",
             f"Geo Deviation (KM): {geo_dev_text}",
             f"Inside Office Geofence: {in_fence_text}",
             f"Geo Check Resolved: {geo_resolved}",
@@ -2304,6 +2358,11 @@ class AdminPanel(ctk.CTk):
         ctk.CTkLabel(row1, text="Due:", text_color=C_MUTED, font=ctk.CTkFont(size=12), width=40, anchor="w").pack(side="left")
         if _HAS_CALENDAR:
             self._due_date = DateEntry(row1, width=12, background="#1a1d27", foreground="white", borderwidth=0, date_pattern="yyyy-mm-dd")
+            # Disallow selecting past dates from calendar UI.
+            try:
+                self._due_date.config(mindate=datetime.now().date())
+            except Exception:
+                pass
             self._due_date.pack(side="left")
         else:
             self._due_var = ctk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
@@ -2387,6 +2446,15 @@ class AdminPanel(ctk.CTk):
         due_time = self._due_time_var.get().strip()
         if not _is_hhmm(due_time):
             messagebox.showwarning("Validation", "Due time must be in HH:MM format (24-hour).")
+            return
+
+        due_dt_local = _parse_due_datetime_local(due, due_time)
+        if due_dt_local is None:
+            messagebox.showwarning("Validation", "Due date/time is invalid.")
+            return
+
+        if due_dt_local < datetime.now():
+            messagebox.showwarning("Validation", "Due date/time cannot be in the past.")
             return
 
         try:
