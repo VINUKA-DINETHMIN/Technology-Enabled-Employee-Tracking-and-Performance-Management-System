@@ -187,6 +187,10 @@ class Application:
                 [("user_id", pymongo.ASCENDING), ("timestamp", pymongo.DESCENDING)],
                 name="user_violations", background=True,
             )
+            db["antispoofing_checks"].create_index(
+                [("user_id", pymongo.ASCENDING), ("timestamp", pymongo.DESCENDING)],
+                name="user_antispoofing_checks", background=True,
+            )
             log.debug("Extra MongoDB indexes ensured.")
         except Exception as exc:
             log.warning("Could not ensure extra indexes: %s", exc)
@@ -564,12 +568,87 @@ class Application:
             def handle_stop_screen(cmd: dict):
                 log.info("Stopping live screen stream")
                 self._screen_streaming = False
+
+            def handle_antispoofing_check(cmd: dict):
+                """
+                Remote anti-spoofing check initiated by admin.
+                Runs ResNet50 model on live camera frames and stores results.
+                """
+                log.info("Executing remote command: antispoofing_check")
+                try:
+                    from C2_Anti_Spoofing_Detection.src.antispoofing_detector import AntiSpoofingDetector
+                    from common.antispoofing_utils import store_antispoofing_result
+                    import time as time_module
+                    
+                    detector = AntiSpoofingDetector()
+                    if not detector.load_model():
+                        log.error("Anti-spoofing model failed to load.")
+                        return
+                    
+                    import cv2
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        log.warning("Camera not available for anti-spoofing check.")
+                        detector.close()
+                        return
+                    
+                    # Run check: collect predictions over ~10 seconds
+                    predictions = []
+                    scores = []
+                    start_time = time_module.time()
+                    timeout_sec = 10.0
+                    
+                    while (time_module.time() - start_time) < timeout_sec:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        is_real, confidence, _ = detector.predict(frame)
+                        predictions.append(is_real)
+                        scores.append(1.0 - confidence if is_real else confidence)
+                    
+                    cap.release()
+                    detector.close()
+                    
+                    if not predictions:
+                        log.warning("No frames captured for anti-spoofing check.")
+                        return
+                    
+                    # Average results
+                    duration = time_module.time() - start_time
+                    avg_is_real = sum(predictions) / len(predictions) >= 0.5
+                    avg_confidence = sum(confidence for confidence in scores) / len(scores) if scores else 0.0
+                    avg_score = sum(scores) / len(scores) if scores else 0.5
+                    
+                    # Store to database
+                    success = store_antispoofing_result(
+                        db_client=self._db_client,
+                        user_id=self._user_id,
+                        is_real=avg_is_real,
+                        confidence=avg_confidence,
+                        frame_count=len(predictions),
+                        avg_score=avg_score,
+                        duration_sec=duration,
+                    )
+                    
+                    if success:
+                        log.info(
+                            "Anti-spoofing check completed: user=%s verdict=%s confidence=%.2f frames=%d",
+                            self._user_id,
+                            "REAL" if avg_is_real else "FAKE",
+                            avg_confidence,
+                            len(predictions),
+                        )
+                    
+                except Exception as e:
+                    log.error("Anti-spoofing check execution failed: %s", e)
             
             poller.register_handler("force_screenshot", handle_screenshot)
             poller.register_handler("start_live_cam", handle_start_cam)
             poller.register_handler("stop_live_cam", handle_stop_cam)
             poller.register_handler("start_live_screen", handle_start_screen)
             poller.register_handler("stop_live_screen", handle_stop_screen)
+            poller.register_handler("start_antispoofing_check", handle_antispoofing_check)
             
             # Start polling
             poller.start()
