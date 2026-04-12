@@ -22,6 +22,10 @@ def store_antispoofing_result(
     frame_count: int,
     avg_score: float,
     duration_sec: float,
+    identity_match: bool | None = None,
+    identity_score: float = 0.0,
+    identity_status: str = "UNKNOWN",
+    verdict: str | None = None,
 ) -> bool:
     """
     Store antispoofing check result to MongoDB.
@@ -42,6 +46,14 @@ def store_antispoofing_result(
         Average antispoofing score across frames.
     duration_sec:
         Time taken for check.
+    identity_match:
+        True if live face matches stored user face, False if not, None if unknown.
+    identity_score:
+        Similarity score between live face and stored user face.
+    identity_status:
+        Identity context string like SAME_PERSON, DIFFERENT_PERSON, NO_TEMPLATE, UNKNOWN.
+    verdict:
+        Optional explicit verdict string.
 
     Returns
     -------
@@ -66,15 +78,19 @@ def store_antispoofing_result(
             "frame_count": int(frame_count),
             "avg_score": float(avg_score),
             "check_duration_sec": float(duration_sec),
-            "verdict": "REAL" if is_real else "FAKE",
+            "identity_match": identity_match,
+            "identity_score": float(identity_score),
+            "identity_status": identity_status,
+            "verdict": verdict if verdict is not None else ("REAL" if is_real else "FAKE"),
         }
 
         col.insert_one(result_doc)
         logger.info(
-            "Antispoofing result stored: user=%s verdict=%s confidence=%.2f",
+            "Antispoofing result stored: user=%s verdict=%s confidence=%.2f identity_status=%s",
             user_id,
             result_doc["verdict"],
             confidence,
+            identity_status,
         )
         return True
 
