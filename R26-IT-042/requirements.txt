@@ -44,7 +44,7 @@ pandas>=2.0.0
 shap>=0.43.0
 
 # --- Deep Learning (optional — for advanced models) ---
-# tensorflow>=2.13.0
+tensorflow>=2.13.0
 # torch>=2.1.0
 
 # --- Cache ---
