@@ -151,11 +151,22 @@ def start_monitoring(
     model_loaded = anomaly_engine.load_model()
     if not model_loaded:
         logger.error(
-            "Anomaly model/scaler failed to load for user=%s session=%s. "
-            "ActivityLogger will run with model guard enabled.",
+            "Anomaly model failed to load for user=%s session=%s. "
+            "Fail-closed mode enabled; C3 monitoring startup aborted.",
             user_id,
             session_id,
         )
+        _persist_alert(
+            level="HIGH",
+            risk_score=100.0,
+            factors=["model_unavailable_startup", "monitoring_blocked"],
+            extra={
+                "reason": "anomaly_model_unavailable",
+                "session_id": session_id,
+            },
+        )
+        shutdown_event.set()
+        return None
 
     # Wire keyboard and mouse activity → idle detector
     _orig_kb_on_press = keyboard._listener  # patched after start
