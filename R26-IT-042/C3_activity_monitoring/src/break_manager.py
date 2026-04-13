@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 import customtkinter as ctk
-from common.antispoofing_utils import run_camera_antispoofing_check
+from common.antispoofing_utils import get_latest_antispoofing_check, run_camera_antispoofing_check
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,19 @@ class BreakManager:
         duration_sec = int(cfg.get("duration_minutes", 15)) * 60
 
         with self._lock:
+            if (
+                self._monitoring_paused
+                and self._active_break == break_type
+                and self._countdown_window is not None
+            ):
+                try:
+                    if self._countdown_window.winfo_exists():
+                        self._countdown_window.lift()
+                        logger.debug("Break timer already active for %s; skipping duplicate start.", break_type)
+                        return
+                except Exception:
+                    pass
+
             if self._countdown_timer is not None:
                 self._countdown_timer.cancel()
             self._active_break = break_type
@@ -353,6 +366,7 @@ class BreakManager:
                     windows=5,
                     source=f"break_overrun:{break_type}",
                 )
+                self._emit_overrun_presence_alert(break_type)
                 logger.info("Break overrun verification completed for %s (%s)", self._user_id, break_type)
             except Exception as exc:
                 logger.error("Break overrun verification error: %s", exc)
@@ -364,6 +378,108 @@ class BreakManager:
                         self._overrun_verification_active = False
 
         threading.Thread(target=_worker, daemon=True, name="BreakOverrunVerification").start()
+
+    def _emit_overrun_presence_alert(self, break_type: str) -> None:
+        """Create an explicit alert indicating whether the user is in seat after overrun verification."""
+        result = get_latest_antispoofing_check(self._db, self._user_id)
+
+        if not result:
+            self._persist_presence_alert(
+                break_type=break_type,
+                in_seat=None,
+                level="MEDIUM",
+                risk_score=50.0,
+                factors=["break_overrun_presence_check_unavailable"],
+                extra={"reason": "break_overrun_presence_check", "verification_available": False},
+            )
+            return
+
+        in_seat_val = result.get("in_seat")
+        if isinstance(in_seat_val, bool):
+            in_seat = in_seat_val
+        else:
+            in_seat = bool(result.get("is_real", False))
+
+        is_real = bool(result.get("is_real", False))
+        confidence = float(result.get("confidence", 0.0) or 0.0)
+        verdict = str(result.get("verdict") or "UNKNOWN")
+        source = str(result.get("check_source") or f"break_overrun:{break_type}")
+
+        if in_seat:
+            level = "LOW"
+            risk_score = 20.0
+            factors = ["break_overrun_presence_verified"]
+        else:
+            level = "HIGH"
+            risk_score = 82.0
+            factors = ["break_overrun_user_not_in_seat"]
+
+        self._persist_presence_alert(
+            break_type=break_type,
+            in_seat=in_seat,
+            level=level,
+            risk_score=risk_score,
+            factors=factors,
+            extra={
+                "reason": "break_overrun_presence_check",
+                "verification_available": True,
+                "in_seat": in_seat,
+                "spoof_real": is_real,
+                "verification_confidence": round(confidence, 3),
+                "verification_verdict": verdict,
+                "verification_source": source,
+            },
+        )
+
+    def _persist_presence_alert(
+        self,
+        break_type: str,
+        in_seat: Optional[bool],
+        level: str,
+        risk_score: float,
+        factors: list[str],
+        extra: Optional[dict] = None,
+    ) -> None:
+        """Persist and send an overrun-presence alert for admin/employee visibility."""
+        payload = {
+            "type": "alert",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "user_id": self._user_id,
+            "session_id": None,
+            "risk_score": float(risk_score),
+            "level": level,
+            "factors": factors,
+            "reason": "break_overrun_presence_check",
+            "break_type": break_type,
+            "in_seat": in_seat,
+            "resolved": False,
+            **(extra or {}),
+        }
+
+        if self._db is not None and self._db.is_connected:
+            try:
+                col = self._db.get_collection("alerts")
+                if col is not None:
+                    col.insert_one(payload)
+            except Exception as exc:
+                logger.error("Break overrun presence alert persist error: %s", exc)
+
+        if self._alert_sender is not None:
+            try:
+                self._alert_sender.send_alert(
+                    user_id=self._user_id,
+                    risk_score=float(risk_score),
+                    factors=factors,
+                    level=level,
+                    extra={
+                        "reason": payload["reason"],
+                        "break_type": break_type,
+                        "in_seat": in_seat,
+                        **(extra or {}),
+                    },
+                )
+            except Exception as exc:
+                logger.error("Break overrun presence alert send error: %s", exc)
 
     def _show_camera_verification_notice(self, break_type: str) -> None:
         """Show a lightweight notice that camera verification is running."""
@@ -529,6 +645,13 @@ class BreakManager:
         """Show always-on-top break countdown window."""
         def _build():
             try:
+                if self._countdown_window is not None:
+                    try:
+                        if self._countdown_window.winfo_exists():
+                            self._countdown_window.destroy()
+                    except Exception:
+                        pass
+
                 win = ctk.CTkToplevel()
                 win.title("Break Time")
                 win.geometry("320x220")
@@ -564,7 +687,8 @@ class BreakManager:
                     font=ctk.CTkFont(size=36, weight="bold"),
                     text_color="#e2e8f0",
                 )
-                self._countdown_label.pack(pady=14)
+                countdown_label = self._countdown_label
+                countdown_label.pack(pady=14)
 
                 ctk.CTkButton(
                     win,
@@ -578,7 +702,7 @@ class BreakManager:
 
                 self._countdown_window = win
                 remaining = duration_sec
-                self._tick_countdown(win, remaining)
+                self._tick_countdown(win, countdown_label, remaining)
                 win.mainloop()
 
             except Exception as exc:
@@ -587,31 +711,39 @@ class BreakManager:
         t = threading.Thread(target=_build, daemon=True)
         t.start()
 
-    def _tick_countdown(self, win, remaining: int) -> None:
+    def _tick_countdown(self, win, label, remaining: int) -> None:
         if remaining < -300:  # Hard limit 5 min overrun, then auto-close
             try:
                 win.destroy()
             except Exception:
                 pass
+            if self._countdown_window is win:
+                self._countdown_window = None
+            if self._countdown_label is label:
+                self._countdown_label = None
             if self._monitoring_paused:
                 self.resume_monitoring()
             return
             
         try:
-            if self._countdown_label:
+            if label is not None and win.winfo_exists():
                 # Format with minus sign for overruns
                 display_time = _format_time(abs(remaining))
                 if remaining < 0:
                     display_time = f"-{display_time}"
-                    self._countdown_label.configure(text_color="#ef4444")  # C_RED
+                    label.configure(text_color="#ef4444")  # C_RED
                     win.title("BREAK OVERRUN!")
                 else:
-                    self._countdown_label.configure(text=display_time)
+                    label.configure(text=display_time)
                 
-                self._countdown_label.configure(text=display_time)
+                label.configure(text=display_time)
                 
-            win.after(1000, lambda: self._tick_countdown(win, remaining - 1))
+            win.after(1000, lambda: self._tick_countdown(win, label, remaining - 1))
         except Exception:
+            if self._countdown_window is win:
+                self._countdown_window = None
+            if self._countdown_label is label:
+                self._countdown_label = None
             pass
 
     def _on_early_return(self, win) -> None:
@@ -620,6 +752,9 @@ class BreakManager:
             win.destroy()
         except Exception:
             pass
+        if self._countdown_window is win:
+            self._countdown_window = None
+        self._countdown_label = None
         self.resume_monitoring()
 
     # ------------------------------------------------------------------
