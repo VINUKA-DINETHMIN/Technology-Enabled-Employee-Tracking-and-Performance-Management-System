@@ -51,6 +51,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+_REQUIRED_MODEL_FILES = (
+    "user_behavioral_model.pkl",
+    "feature_scaler.pkl",
+)
+
 
 def _ensure_project_venv_runtime() -> None:
     """Re-exec into the project virtualenv interpreter when available."""
@@ -78,7 +83,33 @@ def _ensure_project_venv_runtime() -> None:
     raise SystemExit(0)
 
 
+def _enforce_launch_policy() -> None:
+    """Enforce single launcher usage and model preflight for employee mode."""
+    if os.environ.get("WORKPLUS_ALLOW_DIRECT") == "1":
+        return
+
+    if os.environ.get("WORKPLUS_LAUNCHER") != "1":
+        print(
+            "[WorkPlus] Start blocked. Use start_employee.bat or start_admin.bat "
+            "to enforce a single runtime."
+        )
+        raise SystemExit(1)
+
+    # Admin mode does not require C3 model files to view dashboard data.
+    if "--admin" in sys.argv:
+        return
+
+    models_dir = _PROJECT_ROOT / "C3_activity_monitoring" / "models"
+    missing = [str(models_dir / f) for f in _REQUIRED_MODEL_FILES if not (models_dir / f).exists()]
+    if missing:
+        print("[WorkPlus] Start blocked. Required anomaly model artifacts are missing:")
+        for path in missing:
+            print(f"  - {path}")
+        raise SystemExit(1)
+
+
 _ensure_project_venv_runtime()
+_enforce_launch_policy()
 
 # ── Internal imports ──────────────────────────────────────────────────────
 from config.settings import settings
