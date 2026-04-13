@@ -302,6 +302,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         risk_doc = self._latest_activity(emp_id)
         risk = risk_doc.get("composite_risk_score", 0.0) if risk_doc else 0.0
         risk_color = _risk_color(risk)
+        if not risk_doc:
+            score_source = "Unknown"
+            score_source_color = C_MUTED
+        elif bool(risk_doc.get("anomaly_model_loaded")) and risk_doc.get("anomaly_model_score") is not None:
+            score_source = "ML"
+            score_source_color = C_GREEN
+        else:
+            score_source = "Fallback"
+            score_source_color = C_AMBER
 
         rframe = ctk.CTkFrame(body, fg_color=C_CARD, corner_radius=12)
         rframe.pack(fill="x", pady=(0, 12))
@@ -310,6 +319,12 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
         progress = ctk.CTkProgressBar(rframe, height=10, progress_color=risk_color, fg_color=C_BORDER)
         progress.set(risk / 100.0)
         progress.pack(fill="x", padx=16, pady=(4, 12))
+        ctk.CTkLabel(
+            rframe,
+            text=f"Scoring Source: {score_source}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=score_source_color,
+        ).pack(anchor="w", padx=16, pady=(0, 12))
 
         # Currently Active Task & Top App
         if risk_doc:
@@ -729,6 +744,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 projection = {
                     "_id": 0,
                     "composite_risk_score": 1,
+                    "anomaly_model_loaded": 1,
+                    "anomaly_model_score": 1,
                     "productivity_score": 1,
                     "top_app": 1,
                     "idle_ratio": 1,

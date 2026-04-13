@@ -56,7 +56,6 @@ _SCREENSHOT_CONSECUTIVE_THRESHOLD = 2
 
 # Log interval in seconds
 _LOG_INTERVAL = 60.0
-_MODEL_RELOAD_INTERVAL_SEC = 300.0
 
 # Unproductive apps/sites list
 _UNPRODUCTIVE_APPS = ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
@@ -150,6 +149,55 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
     return factors
 
 
+def _fallback_risk_score(fv: dict) -> float:
+    """Heuristic risk score used only when the ML model is unavailable."""
+    score = 0.0
+
+    if fv.get("idle_ratio", 0.0) > 0.5:
+        score += 18.0
+    if fv.get("typing_speed_wpm", 0.0) < 5.0:
+        score += 18.0
+    if fv.get("error_rate", 0.0) > 0.3:
+        score += 8.0
+    if fv.get("app_switch_frequency", 0.0) > 20.0:
+        score += 10.0
+    if fv.get("active_app_entropy", 0.0) < 0.3:
+        score += 8.0
+    if not fv.get("wifi_ssid_match", True):
+        score += 8.0
+    if not fv.get("device_fingerprint_match", True):
+        score += 8.0
+    if fv.get("face_liveness_score", 1.0) < 0.5:
+        score += 10.0
+    if fv.get("geolocation_deviation", 0.0) > 50.0:
+        score += 8.0
+    if fv.get("inside_office_geofence") is False:
+        score += 10.0
+    if fv.get("vpn_proxy_detected", False):
+        score += 10.0
+    if fv.get("hosting_detected", False):
+        score += 8.0
+    if float(fv.get("location_trust_score", 100.0) or 100.0) < 50.0:
+        score += 8.0
+    if fv.get("top_app", "").lower() in _UNPRODUCTIVE_APPS:
+        score += 8.0
+    if fv.get("active_task_id") is None and fv.get("typing_speed_wpm", 0.0) > 20:
+        score += 8.0
+    if fv.get("click_frequency", 0.0) > 100.0:
+        score += 10.0
+    if fv.get("mean_curvature", 0.0) > 0.8:
+        score += 8.0
+    if fv.get("mean_velocity", 0.0) > 1500.0:
+        score += 8.0
+    if (
+        _safe_float(fv.get("mean_velocity", 0.0), 0.0) < _LOW_MOUSE_VELOCITY
+        and _safe_float(fv.get("click_frequency", 0.0), 0.0) < _LOW_MOUSE_CLICK_FREQUENCY
+    ):
+        score += 8.0
+
+    return round(max(0.0, min(100.0, score)), 2)
+
+
 def _geo_risk_adjustment(fv: dict) -> float:
     """Extra risk penalties for location mismatch and suspicious network context."""
     penalty = 0.0
@@ -229,7 +277,6 @@ class ActivityLogger:
         self._log_interval = log_interval
         self._high_risk_consecutive = 0
         self._model_guard_alert_sent = False
-        self._last_model_reload_attempt = 0.0
 
         # Lazy-load encryptor
         self._encryptor = None
@@ -322,6 +369,7 @@ class ActivityLogger:
         if model_score is not None:
             risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
         else:
+            risk_score = _fallback_risk_score(fv)
             self._warn_model_unavailable_once()
 
         productivity_score = _risk_to_productivity(
@@ -451,10 +499,6 @@ class ActivityLogger:
         try:
             if self._engine.is_loaded:
                 return
-            now = time.time()
-            if (now - self._last_model_reload_attempt) < _MODEL_RELOAD_INTERVAL_SEC:
-                return
-            self._last_model_reload_attempt = now
             if self._engine.load_model():
                 logger.info("Anomaly model reload succeeded for user=%s", self._user_id)
                 # Reset one-time guard so future genuine outages are still reported.
