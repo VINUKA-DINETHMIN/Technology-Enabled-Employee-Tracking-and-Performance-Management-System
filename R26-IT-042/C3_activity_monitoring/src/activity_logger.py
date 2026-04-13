@@ -372,6 +372,8 @@ class ActivityLogger:
             risk_score = _fallback_risk_score(fv)
             self._warn_model_unavailable_once()
 
+        model_error = None if model_score is not None else getattr(self._engine, "last_load_error", None)
+
         productivity_score = _risk_to_productivity(
             risk_score,
             fv.get("idle_ratio", 0.0),
@@ -410,6 +412,7 @@ class ActivityLogger:
             "composite_risk_score": round(risk_score, 2),
             "anomaly_model_loaded": model_loaded,
             "anomaly_model_score": None if model_score is None else round(_safe_float(model_score, 0.0), 2),
+            "anomaly_model_error": model_error,
             "productivity_score": productivity_score,
             "idle_ratio": round(_safe_float(fv.get("idle_ratio", 0.0), 0.0), 4),
             "app_switch_frequency": round(_safe_float(fv.get("app_switch_frequency", 0.0), 0.0), 3),
