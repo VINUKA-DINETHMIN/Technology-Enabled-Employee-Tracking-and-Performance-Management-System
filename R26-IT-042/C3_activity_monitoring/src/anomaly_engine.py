@@ -114,54 +114,79 @@ class AnomalyEngine:
         bool
             True if both files loaded successfully.
         """
-        try:
-            if _MODEL_PATH.exists():
-                with open(_MODEL_PATH, "rb") as f:
-                    self._model = pickle.load(f)
-                logger.info("IsolationForest model loaded from %s", _MODEL_PATH)
-            else:
-                logger.warning("Model file not found: %s — anomaly scoring disabled.", _MODEL_PATH)
-                return False
+        # Reset optional artifacts for a clean reload attempt.
+        self._model = None
+        self._scaler = None
+        self._ae_model = None
+        self._ae_scaler = None
+        self._ae_threshold = None
+        self._model_loaded = False
 
-            if _SCALER_PATH.exists():
+        if not _MODEL_PATH.exists():
+            logger.warning("Model file not found: %s — anomaly scoring disabled.", _MODEL_PATH)
+            return False
+
+        # Primary model is mandatory.
+        try:
+            with open(_MODEL_PATH, "rb") as f:
+                self._model = pickle.load(f)
+            logger.info("IsolationForest model loaded from %s", _MODEL_PATH)
+        except Exception as exc:
+            logger.error("Failed to load primary anomaly model from %s: %s", _MODEL_PATH, exc)
+            return False
+
+        # Scaler is helpful but not strictly required for runtime continuity.
+        if _SCALER_PATH.exists():
+            try:
                 with open(_SCALER_PATH, "rb") as f:
                     self._scaler = pickle.load(f)
                 logger.info("Feature scaler loaded from %s", _SCALER_PATH)
+            except Exception as exc:
+                logger.warning("Could not load feature scaler (%s): %s", _SCALER_PATH, exc)
 
-            if _AE_MODEL_PATH.exists():
+        # Optional ensemble artifacts should never disable the primary IF model.
+        if _AE_MODEL_PATH.exists():
+            try:
                 with open(_AE_MODEL_PATH, "rb") as f:
                     self._ae_model = pickle.load(f)
                 logger.info("Autoencoder model loaded from %s", _AE_MODEL_PATH)
+            except Exception as exc:
+                logger.warning("Could not load autoencoder model (%s): %s", _AE_MODEL_PATH, exc)
+                self._ae_model = None
 
-            ae_scaler_path = _AE_SCALER_PATH if _AE_SCALER_PATH.exists() else _SCALER_PATH
-            if ae_scaler_path.exists():
+        ae_scaler_path = _AE_SCALER_PATH if _AE_SCALER_PATH.exists() else _SCALER_PATH
+        if ae_scaler_path.exists():
+            try:
                 with open(ae_scaler_path, "rb") as f:
                     self._ae_scaler = pickle.load(f)
                 logger.info("Autoencoder scaler loaded from %s", ae_scaler_path)
+            except Exception as exc:
+                logger.warning("Could not load autoencoder scaler (%s): %s", ae_scaler_path, exc)
+                self._ae_scaler = None
 
-            if _AE_THRESHOLD_PATH.exists():
+        if _AE_THRESHOLD_PATH.exists():
+            try:
                 with open(_AE_THRESHOLD_PATH, "rb") as f:
                     self._ae_threshold = pickle.load(f)
                 logger.info("Autoencoder threshold loaded from %s", _AE_THRESHOLD_PATH)
+            except Exception as exc:
+                logger.warning("Could not load autoencoder threshold (%s): %s", _AE_THRESHOLD_PATH, exc)
+                self._ae_threshold = None
 
-            if _ENSEMBLE_CONFIG_PATH.exists():
-                try:
-                    import json
-                    with open(_ENSEMBLE_CONFIG_PATH, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                    self._if_weight = float(cfg.get("weight", self._if_weight))
-                    self._ae_weight = max(0.0, 1.0 - self._if_weight)
-                    self._ensemble_threshold = float(cfg.get("threshold", 50.0))
-                    logger.info("Ensemble config loaded from %s", _ENSEMBLE_CONFIG_PATH)
-                except Exception as exc:
-                    logger.warning("Could not load ensemble config: %s", exc)
+        if _ENSEMBLE_CONFIG_PATH.exists():
+            try:
+                import json
+                with open(_ENSEMBLE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self._if_weight = float(cfg.get("weight", self._if_weight))
+                self._ae_weight = max(0.0, 1.0 - self._if_weight)
+                self._ensemble_threshold = float(cfg.get("threshold", 50.0))
+                logger.info("Ensemble config loaded from %s", _ENSEMBLE_CONFIG_PATH)
+            except Exception as exc:
+                logger.warning("Could not load ensemble config: %s", exc)
 
-            self._model_loaded = True
-            return True
-
-        except Exception as exc:
-            logger.error("Failed to load anomaly model: %s", exc)
-            return False
+        self._model_loaded = True
+        return True
 
     def score(self, features: np.ndarray) -> float:
         """
