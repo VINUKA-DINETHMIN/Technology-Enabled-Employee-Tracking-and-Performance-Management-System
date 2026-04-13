@@ -7,7 +7,7 @@ Post-break session monitoring hook used by C3 BreakManager.
 
 from __future__ import annotations
 
-from C2_facial_liveness.src import run_liveness_check
+from C2_Anti_Spoofing_Detection.src import run_liveness_check
 
 
 def run_post_break_session_check(user_id: str = "UNKNOWN", timeout_sec: float = 30.0) -> bool:

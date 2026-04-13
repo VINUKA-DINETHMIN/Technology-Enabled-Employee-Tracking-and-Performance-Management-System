@@ -205,12 +205,22 @@ class AppUsageMonitor:
             with self._lock:
                 if current_app != last_app:
                     if last_app:
-                        # Close the previous segment
-                        self._segments.append({
-                            "app": last_app,
-                            "start_ts": last_ts,
-                            "end_ts": now,
-                        })
+                        # Close previous app segment without duplicating entries.
+                        if self._segments and self._segments[-1]["app"] == last_app:
+                            self._segments[-1]["end_ts"] = now
+                        else:
+                            self._segments.append({
+                                "app": last_app,
+                                "start_ts": last_ts,
+                                "end_ts": now,
+                            })
+
+                    # Start a new segment for the current app immediately.
+                    self._segments.append({
+                        "app": current_app,
+                        "start_ts": now,
+                        "end_ts": now,
+                    })
                     last_app = current_app
                     last_ts = now
                 else:

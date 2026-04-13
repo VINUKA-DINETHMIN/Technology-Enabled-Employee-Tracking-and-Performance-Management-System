@@ -645,7 +645,7 @@ class Application:
                     except Exception as exc:
                         log.warning("Unable to load stored user face embedding: %s", exc)
 
-                    FACE_RECOGNITION_THRESHOLD = 0.78
+                    FACE_RECOGNITION_THRESHOLD = 0.70
 
                     def is_facenet_embedding(embedding) -> bool:
                         try:
@@ -791,7 +791,7 @@ class Application:
                                         x, y, w, h = detection_box
                                         face_roi = frame[y:y + h, x:x + w]
                                         identity_score = histogram_similarity(face_roi, stored_embedding)
-                                        matched = identity_score >= 0.45
+                                        matched = identity_score >= FACE_RECOGNITION_THRESHOLD
                                 else:
                                     log.debug("No face region detected by cascade; falling back to full-frame identity verification.")
                                     if verifier is not None and not legacy_histogram:
@@ -802,7 +802,7 @@ class Application:
                                         )
                                     else:
                                         identity_score = histogram_similarity(frame, stored_embedding)
-                                        matched = identity_score >= 0.45
+                                        matched = identity_score >= FACE_RECOGNITION_THRESHOLD
                             except Exception as exc:
                                 log.debug("Identity verification failed for frame: %s", exc)
                                 matched = False

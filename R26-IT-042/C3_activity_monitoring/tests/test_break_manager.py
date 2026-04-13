@@ -2,55 +2,90 @@
 R26-IT-042 — C3: Tests
 C3_activity_monitoring/tests/test_break_manager.py
 
-Unit tests for BreakManager.
-Run with: pytest C3_activity_monitoring/tests/test_break_manager.py
+Unit tests for BreakManager overrun behavior.
+Run with: python -m unittest C3_activity_monitoring.tests.test_break_manager -v
 """
 
 import unittest
-from datetime import time
-from config.break_config import BreakConfig
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+from C3_activity_monitoring.src.break_manager import BreakManager
+
+
+class _MockCollection:
+    def __init__(self):
+        self.docs = []
+
+    def insert_one(self, doc):
+        self.docs.append(doc)
+        return type("InsertResult", (), {"inserted_id": "mock-id"})()
+
+
+class _MockDB:
+    is_connected = True
+
+    def __init__(self):
+        self.alerts = _MockCollection()
+        self.policy_violations = _MockCollection()
+
+    def get_collection(self, name):
+        if name == "alerts":
+            return self.alerts
+        if name == "policy_violations":
+            return self.policy_violations
+        return None
 
 
 class TestBreakManager(unittest.TestCase):
 
-    def setUp(self):
-        self.config = BreakConfig()
+    def test_check_overrun_short_break_threshold(self):
+        """check_overrun should be True after duration + short overrun threshold."""
+        bm = BreakManager()
+        bm._breaks = {"short_1": {"start": "10:00", "duration_minutes": 15}}
+        bm._active_break = "short_1"
+        bm._break_start_time = datetime.now() - timedelta(minutes=19, seconds=30)
 
-    def test_lunch_time_is_break(self):
-        """12:45 should be detected as break (lunch 12:30-13:30)."""
-        from C3_activity_monitoring.src.break_manager import BreakManager
-        bm = BreakManager(config=self.config)
-        # Monkey-patch datetime.now().time() for 12:45
-        import C3_activity_monitoring.src.break_manager as bm_module
-        from unittest.mock import patch
-        import datetime
+        self.assertTrue(bm.check_overrun())
 
-        mock_now = datetime.datetime(2025, 1, 1, 12, 45)
-        with patch("C3_activity_monitoring.src.break_manager.datetime") as mock_dt:
-            mock_dt.now.return_value = mock_now
-            result = bm.should_suppress_alerts()
-        self.assertTrue(result)
+    @patch.object(BreakManager, "_start_overrun_verification")
+    @patch.object(BreakManager, "_show_overrun_notice")
+    def test_overrun_alert_reaches_employee_and_admin_paths(self, mock_notice, mock_start_verification):
+        """Overrun should send websocket alert and persist docs used by admin/employee UIs."""
+        db = _MockDB()
+        sender = MagicMock()
 
-    def test_work_hours_not_break(self):
-        """10:00 (non-break) should not suppress alerts."""
-        from C3_activity_monitoring.src.break_manager import BreakManager
-        import C3_activity_monitoring.src.break_manager as bm_module
-        from unittest.mock import patch
-        import datetime
+        bm = BreakManager(db_client=db, alert_sender=sender, user_id="EMP001")
+        bm._on_overrun_detected("short_2")
 
-        bm = BreakManager(config=self.config)
-        mock_now = datetime.datetime(2025, 1, 1, 10, 0)
-        with patch("C3_activity_monitoring.src.break_manager.datetime") as mock_dt:
-            mock_dt.now.return_value = mock_now
-            result = bm.should_suppress_alerts()
-        self.assertFalse(result)
+        mock_notice.assert_called_once_with("short_2")
+        mock_start_verification.assert_called_once_with("short_2")
 
-    def test_is_break_time(self):
-        """BreakConfig.is_break_time should recognise lunch and short breaks."""
-        self.assertTrue(self.config.is_break_time(time(12, 30)))
-        self.assertTrue(self.config.is_break_time(time(10, 40)))
-        self.assertTrue(self.config.is_break_time(time(15, 35)))
-        self.assertFalse(self.config.is_break_time(time(9, 0)))
+        sender.send_alert.assert_called_once()
+        sent_kwargs = sender.send_alert.call_args.kwargs
+        self.assertEqual(sent_kwargs["user_id"], "EMP001")
+        self.assertEqual(sent_kwargs["level"], "LOW")
+        self.assertEqual(sent_kwargs["extra"]["reason"], "break_overrun")
+        self.assertEqual(sent_kwargs["extra"]["break_type"], "short_2")
+
+        self.assertEqual(len(db.alerts.docs), 1)
+        alert_doc = db.alerts.docs[0]
+        # Admin panel path: user_id + level/factors/timestamp/risk_score
+        self.assertEqual(alert_doc["user_id"], "EMP001")
+        self.assertEqual(alert_doc["level"], "LOW")
+        self.assertEqual(alert_doc["factors"], ["break_overrun"])
+        self.assertIn("timestamp", alert_doc)
+        self.assertIn("risk_score", alert_doc)
+        # Employee panel path: reason + unresolved flag + break type
+        self.assertEqual(alert_doc["reason"], "break_overrun")
+        self.assertEqual(alert_doc["break_type"], "short_2")
+        self.assertFalse(alert_doc["resolved"])
+
+        self.assertEqual(len(db.policy_violations.docs), 1)
+        violation_doc = db.policy_violations.docs[0]
+        self.assertEqual(violation_doc["user_id"], "EMP001")
+        self.assertEqual(violation_doc["violation_type"], "break_overrun")
+        self.assertEqual(violation_doc["break_type"], "short_2")
 
 
 if __name__ == "__main__":

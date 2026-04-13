@@ -19,11 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 from typing import Optional
 
 import customtkinter as ctk
+from common.antispoofing_utils import run_camera_antispoofing_check
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class BreakManager:
         self._countdown_window: Optional[ctk.CTkToplevel] = None
         self._countdown_label: Optional[ctk.CTkLabel] = None
         self._countdown_timer: Optional[threading.Timer] = None
+        self._overrun_verification_active: bool = False
         self._lock = threading.Lock()
 
         # Load encryptor lazily
@@ -313,9 +315,6 @@ class BreakManager:
         # Notify employee locally when break limit is exceeded.
         self._show_overrun_notice(break_type)
 
-        # Resume monitoring immediately
-        self.resume_monitoring()
-
         # Send alert
         if self._alert_sender:
             try:
@@ -334,6 +333,64 @@ class BreakManager:
         # Log policy violation
         self._log_policy_violation(break_type)
 
+        # Trigger camera verification for the employee side and store the result
+        self._start_overrun_verification(break_type)
+
+    def _start_overrun_verification(self, break_type: str) -> None:
+        """Kick off a background camera check after a break overrun."""
+        with self._lock:
+            if self._overrun_verification_active:
+                return
+            self._overrun_verification_active = True
+
+        def _worker() -> None:
+            try:
+                self._show_camera_verification_notice(break_type)
+                run_camera_antispoofing_check(
+                    db_client=self._db,
+                    user_id=self._user_id,
+                    timeout_sec=10.0,
+                    windows=5,
+                    source=f"break_overrun:{break_type}",
+                )
+                logger.info("Break overrun verification completed for %s (%s)", self._user_id, break_type)
+            except Exception as exc:
+                logger.error("Break overrun verification error: %s", exc)
+            finally:
+                try:
+                    self.resume_monitoring()
+                finally:
+                    with self._lock:
+                        self._overrun_verification_active = False
+
+        threading.Thread(target=_worker, daemon=True, name="BreakOverrunVerification").start()
+
+    def _show_camera_verification_notice(self, break_type: str) -> None:
+        """Show a lightweight notice that camera verification is running."""
+        def _build_notice():
+            try:
+                note = ctk.CTkToplevel()
+                note.title("Camera Verification")
+                note.geometry("340x100")
+                note.resizable(False, False)
+                note.attributes("-topmost", True)
+                note.configure(fg_color="#111827")
+
+                message = f"{break_type.replace('_', ' ').title()} overrun detected. Camera check running."
+                ctk.CTkLabel(
+                    note,
+                    text=message,
+                    text_color="#e2e8f0",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    wraplength=300,
+                ).pack(expand=True, padx=14, pady=18)
+                note.after(3000, note.destroy)
+                note.mainloop()
+            except Exception:
+                pass
+
+        threading.Thread(target=_build_notice, daemon=True).start()
+
     def _persist_overrun_alert(self, break_type: str) -> None:
         """Persist break-overrun alert so Admin Alerts tab can always display it."""
         if self._db is None or not self._db.is_connected:
@@ -344,7 +401,7 @@ class BreakManager:
                 return
             col.insert_one({
                 "type": "alert",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "user_id": self._user_id,
                 "session_id": None,
                 "risk_score": 30.0,
@@ -368,7 +425,7 @@ class BreakManager:
                     "user_id": self._user_id,
                     "violation_type": "break_overrun",
                     "break_type": break_type,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "threshold_minutes": (
                         _LUNCH_OVERRUN_MINUTES if break_type == "lunch"
                         else _SHORT_OVERRUN_MINUTES
@@ -389,7 +446,7 @@ class BreakManager:
                 from C3_activity_monitoring.src.session_monitor import run_post_break_session_check
                 result = run_post_break_session_check(user_id=self._user_id)
             except ImportError:
-                from C2_facial_liveness.src import run_liveness_check
+                from C2_Anti_Spoofing_Detection.src import run_liveness_check
                 result = run_liveness_check(user_id=self._user_id)
 
             if not result:
