@@ -8,6 +8,7 @@ Stores antispoofing check results to MongoDB for admin panel consumption.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,6 +27,7 @@ def store_antispoofing_result(
     identity_score: float = 0.0,
     identity_status: str = "UNKNOWN",
     verdict: str | None = None,
+    extra: Optional[dict] = None,
 ) -> bool:
     """
     Store antispoofing check result to MongoDB.
@@ -82,6 +84,7 @@ def store_antispoofing_result(
             "identity_score": float(identity_score),
             "identity_status": identity_status,
             "verdict": verdict if verdict is not None else ("REAL" if is_real else "FAKE"),
+            **(extra or {}),
         }
 
         col.insert_one(result_doc)
@@ -97,6 +100,54 @@ def store_antispoofing_result(
     except Exception as exc:
         logger.error("Failed to store antispoofing result: %s", exc)
         return False
+
+
+def run_camera_antispoofing_check(
+    db_client,
+    user_id: str,
+    timeout_sec: float = 10.0,
+    windows: int = 5,
+    source: str = "break_overrun",
+) -> bool:
+    """Run a camera-based anti-spoofing check and persist the result."""
+    start = time.time()
+
+    try:
+        from C2_Anti_Spoofing_Detection.src.antispoofing_detector import AntiSpoofingDetector
+    except Exception as exc:
+        logger.warning("Anti-spoofing detector unavailable: %s", exc)
+        return False
+
+    detector = AntiSpoofingDetector()
+    model_loaded = detector.load_model()
+    try:
+        is_real, confidence, reason = detector.predict_from_camera(timeout_sec=timeout_sec, windows=windows)
+        duration = time.time() - start
+    finally:
+        detector.close()
+
+    identity_status = "UNKNOWN" if model_loaded else "VERIFIER_UNAVAILABLE"
+    verdict = "REAL" if is_real else "FAKE"
+    if not model_loaded:
+        verdict = "VERIFIER_UNAVAILABLE"
+
+    return store_antispoofing_result(
+        db_client=db_client,
+        user_id=user_id,
+        is_real=is_real,
+        confidence=confidence,
+        frame_count=windows,
+        avg_score=confidence,
+        duration_sec=duration,
+        identity_match=None,
+        identity_score=0.0,
+        identity_status=identity_status,
+        verdict=verdict,
+        extra={
+            "check_source": source,
+            "check_reason": reason,
+        },
+    )
 
 
 def get_latest_antispoofing_check(db_client, user_id: str) -> Optional[dict]:

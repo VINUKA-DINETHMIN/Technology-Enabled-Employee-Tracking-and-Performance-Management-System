@@ -915,6 +915,9 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
 
             identity_status = result.get("identity_status", "UNKNOWN")
             identity_score = float(result.get("identity_score", 0.0) or 0.0)
+            # Keep display aligned with current policy even for older stored records.
+            if identity_score >= 0.70 and identity_status in {"DIFFERENT_PERSON", "UNKNOWN"}:
+                identity_status = "SAME_PERSON"
             identity_text = ""
             if identity_status == "SAME_PERSON":
                 identity_text = f"Identity: Same person ({identity_score:.2f})"
@@ -931,6 +934,15 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 result_box, text=identity_text,
                 font=ctk.CTkFont(size=10), text_color=C_MUTED,
             ).pack(anchor="w", padx=12, pady=(0, 8))
+
+            source_text = result.get("check_source") or result.get("source") or result.get("context")
+            if source_text:
+                ctk.CTkLabel(
+                    result_box,
+                    text=f"Source: {source_text}",
+                    font=ctk.CTkFont(size=9),
+                    text_color=C_MUTED,
+                ).pack(anchor="w", padx=12, pady=(0, 4))
 
             # Timestamp
             ts_text = _fmt_time(result.get("timestamp", ""))
