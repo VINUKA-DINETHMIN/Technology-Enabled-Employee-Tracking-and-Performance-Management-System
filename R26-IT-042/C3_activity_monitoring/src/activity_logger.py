@@ -347,32 +347,36 @@ class ActivityLogger:
 
         # ── Score anomaly ─────────────────────────────────────────────
         model_loaded = bool(self._engine.is_loaded)
+        if not model_loaded:
+            self._warn_model_unavailable_once()
+            logger.error(
+                "Fail-closed: skipping activity log for user=%s session=%s because anomaly model is unavailable.",
+                self._user_id,
+                self._session_id,
+            )
+            return
+
         model_score = None
         risk_score = 0.0
-        if model_loaded:
-            import numpy as np
-            numeric_fields = [
-                "mean_dwell_time", "std_dwell_time", "mean_flight_time",
-                "typing_speed_wpm", "error_rate", "mean_velocity", "std_velocity",
-                "mean_acceleration", "mean_curvature", "click_frequency",
-                "idle_ratio", "app_switch_frequency", "active_app_entropy",
-                "total_focus_duration", "session_duration_min", "geolocation_deviation",
-                "wifi_ssid_match", "device_fingerprint_match", "face_liveness_score",
-            ]
-            arr = np.array([_safe_float(fv.get(f, 0.0), 0.0) for f in numeric_fields], dtype=np.float32)
-            model_score = float(self._engine.score(arr))
-            risk_score = model_score
+        import numpy as np
+        numeric_fields = [
+            "mean_dwell_time", "std_dwell_time", "mean_flight_time",
+            "typing_speed_wpm", "error_rate", "mean_velocity", "std_velocity",
+            "mean_acceleration", "mean_curvature", "click_frequency",
+            "idle_ratio", "app_switch_frequency", "active_app_entropy",
+            "total_focus_duration", "session_duration_min", "geolocation_deviation",
+            "wifi_ssid_match", "device_fingerprint_match", "face_liveness_score",
+        ]
+        arr = np.array([_safe_float(fv.get(f, 0.0), 0.0) for f in numeric_fields], dtype=np.float32)
+        model_score = float(self._engine.score(arr))
+        risk_score = model_score
 
         # Add deterministic policy penalties only when model score is available.
         # This prevents silent geo-only fallback patterns (for example fixed 8.0)
         # if the model failed to load in a running process.
-        if model_score is not None:
-            risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
-        else:
-            risk_score = _fallback_risk_score(fv)
-            self._warn_model_unavailable_once()
+        risk_score = max(0.0, min(100.0, risk_score + _geo_risk_adjustment(fv)))
 
-        model_error = None if model_score is not None else getattr(self._engine, "last_load_error", None)
+        model_error = None
 
         productivity_score = _risk_to_productivity(
             risk_score,
@@ -385,8 +389,6 @@ class ActivityLogger:
 
         # ── Determine contributing factors and label ───────────────────
         factors = _get_contributing_factors(fv, risk_score)
-        if model_score is None:
-            factors.append("model_unavailable")
         label = _risk_to_label(risk_score)
         alert_triggered = risk_score >= _HARD_WARN
 
