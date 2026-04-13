@@ -146,6 +146,21 @@ def start_monitoring(
         on_idle=_on_idle_detected,
         on_resume=_on_idle_resume,
     )
+
+    # Try to load break manager early so employee break controls remain usable
+    # even if anomaly model startup is blocked.
+    break_mgr = None
+    try:
+        break_mgr = BreakManager(
+            trackers=(keyboard, mouse, app),
+            db_client=db_client,
+            alert_sender=alert_sender,
+            user_id=user_id,
+        )
+        break_mgr.load_breaks()
+    except Exception as exc:
+        logger.warning("BreakManager init error (non-fatal): %s", exc)
+
     offline_queue = OfflineQueue()
     anomaly_engine = AnomalyEngine()
     model_loaded = anomaly_engine.load_model()
@@ -165,8 +180,19 @@ def start_monitoring(
                 "session_id": session_id,
             },
         )
+        if break_mgr is not None:
+            try:
+                _bm_thread = threading.Thread(
+                    target=break_mgr._run_loop,
+                    args=(shutdown_event,),
+                    daemon=True,
+                    name="BreakManager-Loop",
+                )
+                _bm_thread.start()
+            except Exception as exc:
+                logger.warning("BreakManager loop start error: %s", exc)
         # Fail closed for C3 only; do not stop the whole app runtime.
-        return None
+        return break_mgr
 
     # Wire keyboard and mouse activity → idle detector
     _orig_kb_on_press = keyboard._listener  # patched after start
@@ -184,19 +210,6 @@ def start_monitoring(
         wifi_ssid_match=wifi_ssid_match,
         face_liveness_score=face_liveness_score,
     )
-
-    # Try to load break manager
-    break_mgr = None
-    try:
-        break_mgr = BreakManager(
-            trackers=(keyboard, mouse, app),
-            db_client=db_client,
-            alert_sender=alert_sender,
-            user_id=user_id,
-        )
-        break_mgr.load_breaks()
-    except Exception as exc:
-        logger.warning("BreakManager init error (non-fatal): %s", exc)
 
     # Screenshot trigger
     screenshot_trigger = None
