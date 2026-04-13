@@ -51,6 +51,35 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+
+def _ensure_project_venv_runtime() -> None:
+    """Re-exec into the project virtualenv interpreter when available."""
+    if os.environ.get("WORKPLUS_SKIP_VENV_REEXEC") == "1":
+        return
+
+    venv_python = _PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    if not venv_python.exists():
+        return
+
+    try:
+        current = Path(sys.executable).resolve()
+        target = venv_python.resolve()
+    except Exception:
+        return
+
+    if current == target:
+        return
+
+    env = os.environ.copy()
+    env["WORKPLUS_SKIP_VENV_REEXEC"] = "1"
+    cmd = [str(target), str(_PROJECT_ROOT / "main.py"), *sys.argv[1:]]
+    print(f"[WorkPlus] Switching runtime to project venv: {target}")
+    subprocess.Popen(cmd, cwd=str(_PROJECT_ROOT), env=env)
+    raise SystemExit(0)
+
+
+_ensure_project_venv_runtime()
+
 # ── Internal imports ──────────────────────────────────────────────────────
 from config.settings import settings
 from common.database import MongoDBClient
