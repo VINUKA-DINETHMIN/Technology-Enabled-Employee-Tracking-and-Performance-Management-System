@@ -78,6 +78,7 @@ class AnomalyEngine:
         self._ae_weight = _AE_WEIGHT
         self._ensemble_threshold = None
         self._model_loaded = False
+        self._last_load_error: Optional[str] = None
 
     def _align_feature_length(self, x: np.ndarray, expected: int) -> np.ndarray:
         """Adapt feature vector length to what the loaded scaler/model expects."""
@@ -121,8 +122,10 @@ class AnomalyEngine:
         self._ae_scaler = None
         self._ae_threshold = None
         self._model_loaded = False
+        self._last_load_error = None
 
         if not _MODEL_PATH.exists():
+            self._last_load_error = f"model_file_not_found:{_MODEL_PATH}"
             logger.warning("Model file not found: %s — anomaly scoring disabled.", _MODEL_PATH)
             return False
 
@@ -132,6 +135,7 @@ class AnomalyEngine:
                 self._model = pickle.load(f)
             logger.info("IsolationForest model loaded from %s", _MODEL_PATH)
         except Exception as exc:
+            self._last_load_error = f"primary_model_load_failed:{type(exc).__name__}:{exc}"
             logger.error("Failed to load primary anomaly model from %s: %s", _MODEL_PATH, exc)
             return False
 
@@ -186,6 +190,7 @@ class AnomalyEngine:
                 logger.warning("Could not load ensemble config: %s", exc)
 
         self._model_loaded = True
+        self._last_load_error = None
         return True
 
     def score(self, features: np.ndarray) -> float:
@@ -257,3 +262,7 @@ class AnomalyEngine:
     @property
     def is_loaded(self) -> bool:
         return self._model_loaded
+
+    @property
+    def last_load_error(self) -> Optional[str]:
+        return self._last_load_error
