@@ -51,11 +51,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-_REQUIRED_MODEL_FILES = (
-    "user_behavioral_model.pkl",
-    "feature_scaler.pkl",
-)
-
 
 def _ensure_project_venv_runtime() -> None:
     """Re-exec into the project virtualenv interpreter when available."""
@@ -83,13 +78,7 @@ def _ensure_project_venv_runtime() -> None:
     raise SystemExit(0)
 
 
-def _enforce_launch_policy() -> None:
-    """Compatibility hook: direct invocation is allowed."""
-    return
-
-
 _ensure_project_venv_runtime()
-_enforce_launch_policy()
 
 # ── Internal imports ──────────────────────────────────────────────────────
 from config.settings import settings
