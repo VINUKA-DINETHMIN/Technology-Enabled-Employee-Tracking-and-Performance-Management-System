@@ -32,18 +32,27 @@ class TestKeyboardTracker(unittest.TestCase):
         from C3_activity_monitoring.src.keyboard_tracker import KeyboardTracker
 
         tracker = KeyboardTracker()
-        self.assertEqual(tracker.get_wpm(), 0.0)
+        features = tracker.get_features()
+        self.assertEqual(features["typing_speed_wpm"], 0.0)
 
     def test_wpm_calculation(self):
         """WPM calculation: 300 keystrokes in 60s / 5 chars = 60 WPM."""
         from C3_activity_monitoring.src.keyboard_tracker import KeyboardTracker
 
-        tracker = KeyboardTracker()
-        now = time.time()
-        # Inject 300 keystrokes spread over the last 60 seconds
-        tracker._keystrokes = [now - i * 0.2 for i in range(300)]
-        wpm = tracker.get_wpm(window_sec=60.0)
-        self.assertGreater(wpm, 0)
+        tracker = KeyboardTracker(window_sec=60.0)
+        now = time.perf_counter()
+        # Inject 300 keystrokes with valid record shape inside the feature window.
+        tracker._keystrokes = [
+            {
+                "press_ts": now - (i * 0.19),
+                "release_ts": now - (i * 0.19) + 0.08,
+                "dwell_ms": 80.0,
+                "is_backspace": False,
+            }
+            for i in range(300)
+        ]
+        features = tracker.get_features()
+        self.assertGreater(features["typing_speed_wpm"], 0)
 
 
 if __name__ == "__main__":
