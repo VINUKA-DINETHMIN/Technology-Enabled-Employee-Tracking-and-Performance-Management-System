@@ -77,15 +77,20 @@ class KeyboardTracker:
 
             self._running = True
 
+            def _key_id(key) -> str:
+                """Build a stable key identifier for press/release pairing."""
+                vk = getattr(key, "vk", None)
+                if vk is not None:
+                    return f"vk:{vk}"
+                name = getattr(key, "name", None)
+                if name is not None:
+                    return f"name:{name}"
+                return str(key)
+
             def on_press(key):
                 ts = time.perf_counter()
-                # Identify the key without storing its character value
-                try:
-                    key_id = str(key.char.__class__.__name__) + str(id(key))
-                    is_backspace = False
-                except AttributeError:
-                    is_backspace = key == _kb.Key.backspace
-                    key_id = str(key)
+                key_id = _key_id(key)
+                is_backspace = key == _kb.Key.backspace
 
                 with self._lock:
                     self._pending_press[key_id] = (ts, is_backspace)
@@ -94,12 +99,8 @@ class KeyboardTracker:
 
             def on_release(key):
                 release_ts = time.perf_counter()
-                try:
-                    key_id = str(key.char.__class__.__name__) + str(id(key))
-                    is_backspace = False
-                except AttributeError:
-                    is_backspace = key == _kb.Key.backspace
-                    key_id = str(key)
+                key_id = _key_id(key)
+                is_backspace = key == _kb.Key.backspace
 
                 with self._lock:
                     if key_id in self._pending_press:

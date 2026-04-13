@@ -9,6 +9,7 @@ Run with: pytest C3_activity_monitoring/tests/test_anomaly_engine.py
 import unittest
 import numpy as np
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 
 class TestAnomalyEngine(unittest.TestCase):
@@ -40,12 +41,13 @@ class TestAnomalyEngine(unittest.TestCase):
 
     def test_load_model_missing_file(self):
         """load_model() should return False when model files are absent."""
-        from C3_activity_monitoring.src.anomaly_engine import AnomalyEngine
+        from C3_activity_monitoring.src import anomaly_engine
 
-        engine = AnomalyEngine()
-        result = engine.load_model()
-        # Model files don't exist in CI/test environment
+        engine = anomaly_engine.AnomalyEngine()
+        with patch.object(Path, "exists", return_value=False):
+            result = engine.load_model()
         self.assertFalse(result)
+        self.assertFalse(engine.is_loaded)
 
 
 if __name__ == "__main__":
