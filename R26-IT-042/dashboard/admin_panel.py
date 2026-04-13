@@ -2994,6 +2994,7 @@ class AdminPanel(ctk.CTk):
                 "country": "",
                 "isp": "",
                 "ip": "",
+                "wifi_ssid_hash": "",
                 "lat": None,
                 "lon": None,
                 "radius_km": 25.0,
@@ -3047,6 +3048,7 @@ class AdminPanel(ctk.CTk):
         self._geo_country_var.set(str(office.get("country") or ""))
         self._geo_isp_var.set(str(office.get("isp") or ""))
         self._geo_ip_var.set(str(office.get("ip") or ""))
+        self._geo_wifi_hash_var.set(str(office.get("wifi_ssid_hash") or office.get("ssid_hash") or ""))
         self._geo_hint_var.set(str(office.get("location_hint") or ""))
         self._geo_lat_var.set("" if office.get("lat") is None else str(office.get("lat")))
         self._geo_lon_var.set("" if office.get("lon") is None else str(office.get("lon")))
@@ -3059,6 +3061,64 @@ class AdminPanel(ctk.CTk):
 
         if status_msg and hasattr(self, "_geo_status_lbl"):
             self._geo_status_lbl.configure(text=status_msg, text_color=C_GREEN)
+
+    def _get_current_wifi_ssid_hash(self) -> str:
+        """Return a short hash of the currently connected Wi-Fi SSID (best effort)."""
+        import hashlib
+        import platform
+        import subprocess
+
+        ssid = ""
+        try:
+            os_name = platform.system()
+            if os_name == "Windows":
+                result = subprocess.run(
+                    ["netsh", "wlan", "show", "interfaces"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    k = key.strip().lower()
+                    if k == "ssid" and "bssid" not in k:
+                        candidate = value.strip()
+                        if candidate and candidate.lower() != "n/a":
+                            ssid = candidate
+                            break
+            elif os_name == "Darwin":
+                result = subprocess.run(
+                    [
+                        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
+                        "-I",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if "SSID:" in line and "BSSID" not in line:
+                        ssid = line.split(":", 1)[1].strip()
+                        break
+            else:
+                result = subprocess.run(
+                    ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                for line in result.stdout.splitlines():
+                    if line.startswith("yes:"):
+                        ssid = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            ssid = ""
+
+        if not ssid:
+            return ""
+        return hashlib.sha256(ssid.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
     def _capture_office_geofence(self) -> None:
         if hasattr(self, "_geo_status_lbl"):
@@ -3080,6 +3140,7 @@ class AdminPanel(ctk.CTk):
                     self._geo_country_var.set(str(geo.get("country") or ""))
                     self._geo_isp_var.set(str(geo.get("isp") or ""))
                     self._geo_ip_var.set(str(geo.get("ip") or ""))
+                    self._geo_wifi_hash_var.set(self._get_current_wifi_ssid_hash())
                     self._geo_hint_var.set(str(geo.get("location_hint") or ""))
                     self._geo_lat_var.set(str(lat))
                     self._geo_lon_var.set(str(lon))
@@ -3110,6 +3171,7 @@ class AdminPanel(ctk.CTk):
                 "country": self._geo_country_var.get().strip(),
                 "isp": self._geo_isp_var.get().strip(),
                 "ip": self._geo_ip_var.get().strip(),
+                "wifi_ssid_hash": self._geo_wifi_hash_var.get().strip(),
                 "location_hint": self._geo_hint_var.get().strip(),
                 "lat": lat,
                 "lon": lon,
@@ -3151,6 +3213,7 @@ class AdminPanel(ctk.CTk):
         self._geo_country_var = tk.StringVar()
         self._geo_isp_var = tk.StringVar()
         self._geo_ip_var = tk.StringVar()
+        self._geo_wifi_hash_var = tk.StringVar()
         self._geo_hint_var = tk.StringVar()
         self._geo_lat_var = tk.StringVar()
         self._geo_lon_var = tk.StringVar()
@@ -3176,13 +3239,14 @@ class AdminPanel(ctk.CTk):
         _row(1, "left", "Country", self._geo_country_var)
         _row(1, "right", "ISP", self._geo_isp_var)
         _row(2, "left", "Public IP", self._geo_ip_var)
-        _row(2, "right", "Location Hint", self._geo_hint_var)
-        _row(3, "left", "Latitude", self._geo_lat_var)
-        _row(3, "right", "Longitude", self._geo_lon_var)
-        _row(4, "left", "Radius (KM)", self._geo_radius_var)
-        _row(4, "right", "Outside Penalty", self._geo_outside_penalty_var)
-        _row(5, "left", "VPN/Proxy Penalty", self._geo_vpn_penalty_var)
-        _row(5, "right", "Hosting Penalty", self._geo_hosting_penalty_var)
+        _row(2, "right", "Office WiFi Hash", self._geo_wifi_hash_var)
+        _row(3, "left", "Location Hint", self._geo_hint_var)
+        _row(3, "right", "Latitude", self._geo_lat_var)
+        _row(4, "left", "Longitude", self._geo_lon_var)
+        _row(4, "right", "Radius (KM)", self._geo_radius_var)
+        _row(5, "left", "Outside Penalty", self._geo_outside_penalty_var)
+        _row(5, "right", "VPN/Proxy Penalty", self._geo_vpn_penalty_var)
+        _row(6, "left", "Hosting Penalty", self._geo_hosting_penalty_var)
 
         strict_row = ctk.CTkFrame(geo_card, fg_color="transparent")
         strict_row.pack(fill="x", padx=20, pady=(2, 8))
