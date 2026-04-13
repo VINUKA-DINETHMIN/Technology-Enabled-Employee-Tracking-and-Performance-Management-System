@@ -503,6 +503,22 @@ class ActivityLogger:
                 logger.info("Anomaly model reload succeeded for user=%s", self._user_id)
                 # Reset one-time guard so future genuine outages are still reported.
                 self._model_guard_alert_sent = False
+                return
+
+            # If the existing engine instance is in a bad state, try a fresh engine object.
+            try:
+                from C3_activity_monitoring.src.anomaly_engine import AnomalyEngine
+
+                fresh_engine = AnomalyEngine()
+                if fresh_engine.load_model():
+                    self._engine = fresh_engine
+                    logger.info(
+                        "Anomaly model hard-reload with fresh engine succeeded for user=%s",
+                        self._user_id,
+                    )
+                    self._model_guard_alert_sent = False
+            except Exception as inner_exc:
+                logger.debug("Anomaly model hard-reload failed: %s", inner_exc)
         except Exception as exc:
             logger.debug("Anomaly model reload retry failed: %s", exc)
 
