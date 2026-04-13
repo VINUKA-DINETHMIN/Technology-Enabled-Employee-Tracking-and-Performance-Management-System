@@ -48,6 +48,34 @@ class TestBreakManager(unittest.TestCase):
 
         self.assertTrue(bm.check_overrun())
 
+    @patch.object(BreakManager, "pause_monitoring")
+    @patch.object(BreakManager, "_show_break_started_notice")
+    @patch.object(BreakManager, "_show_break_window")
+    def test_duplicate_break_start_is_ignored(self, mock_window, mock_notice, mock_pause):
+        """Starting the same break twice while paused should not spawn another window."""
+
+        class _FakeWin:
+            def winfo_exists(self):
+                return True
+
+            def lift(self):
+                return None
+
+        bm = BreakManager()
+        bm._breaks = {"short_1": {"start": "10:00", "duration_minutes": 15}}
+
+        bm.start_break_timer("short_1")
+        self.assertTrue(mock_window.called)
+
+        # Simulate an existing active break window and paused state.
+        bm._monitoring_paused = True
+        bm._active_break = "short_1"
+        bm._countdown_window = _FakeWin()
+
+        before_calls = mock_window.call_count
+        bm.start_break_timer("short_1")
+        self.assertEqual(mock_window.call_count, before_calls)
+
     @patch.object(BreakManager, "_start_overrun_verification")
     @patch.object(BreakManager, "_show_overrun_notice")
     def test_overrun_alert_reaches_employee_and_admin_paths(self, mock_notice, mock_start_verification):
@@ -86,6 +114,35 @@ class TestBreakManager(unittest.TestCase):
         self.assertEqual(violation_doc["user_id"], "EMP001")
         self.assertEqual(violation_doc["violation_type"], "break_overrun")
         self.assertEqual(violation_doc["break_type"], "short_2")
+
+    @patch("C3_activity_monitoring.src.break_manager.get_latest_antispoofing_check")
+    def test_presence_alert_emitted_when_user_not_in_seat(self, mock_latest):
+        """After overrun verification, a dedicated not-in-seat alert should be emitted."""
+        db = _MockDB()
+        sender = MagicMock()
+        bm = BreakManager(db_client=db, alert_sender=sender, user_id="EMP001")
+
+        mock_latest.return_value = {
+            "is_real": False,
+            "confidence": 0.91,
+            "verdict": "FAKE",
+            "check_source": "break_overrun:short_1",
+        }
+
+        bm._emit_overrun_presence_alert("short_1")
+
+        self.assertEqual(len(db.alerts.docs), 1)
+        alert_doc = db.alerts.docs[0]
+        self.assertEqual(alert_doc["reason"], "break_overrun_presence_check")
+        self.assertEqual(alert_doc["break_type"], "short_1")
+        self.assertEqual(alert_doc["in_seat"], False)
+        self.assertEqual(alert_doc["level"], "HIGH")
+        self.assertIn("break_overrun_user_not_in_seat", alert_doc["factors"])
+
+        sender.send_alert.assert_called_once()
+        sent = sender.send_alert.call_args.kwargs
+        self.assertEqual(sent["level"], "HIGH")
+        self.assertEqual(sent["extra"]["in_seat"], False)
 
 
 if __name__ == "__main__":

@@ -923,6 +923,8 @@ class EmployeeDetailWindow(ctk.CTkToplevel):
                 identity_text = f"Identity: Same person ({identity_score:.2f})"
             elif identity_status == "DIFFERENT_PERSON":
                 identity_text = f"Identity: Different person ({identity_score:.2f})"
+            elif identity_status == "NO_FACE_DETECTED":
+                identity_text = "Identity: No person detected in front of camera"
             elif identity_status == "NO_TEMPLATE":
                 identity_text = "Identity: No stored face template available"
             elif identity_status == "VERIFIER_UNAVAILABLE":

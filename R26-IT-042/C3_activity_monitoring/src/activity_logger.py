@@ -60,6 +60,10 @@ _LOG_INTERVAL = 60.0
 # Unproductive apps/sites list
 _UNPRODUCTIVE_APPS = ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
 
+# Low-activity mouse thresholds used for explicit anomaly factors.
+_LOW_MOUSE_VELOCITY = 80.0
+_LOW_MOUSE_CLICK_FREQUENCY = 5.0
+
 
 def _safe_float(value, default: float = 0.0) -> float:
     try:
@@ -134,6 +138,11 @@ def _get_contributing_factors(fv: dict, risk_score: float) -> list[str]:
         factors.append("erratic_mouse_movement")
     if fv.get("mean_velocity", 0.0) > 1500.0:
         factors.append("high_velocity_movement")
+    if (
+        _safe_float(fv.get("mean_velocity", 0.0), 0.0) < _LOW_MOUSE_VELOCITY
+        and _safe_float(fv.get("click_frequency", 0.0), 0.0) < _LOW_MOUSE_CLICK_FREQUENCY
+    ):
+        factors.append("low_mouse_movement")
 
     if risk_score >= _HARD_WARN:
         factors.append("high_composite_risk")
