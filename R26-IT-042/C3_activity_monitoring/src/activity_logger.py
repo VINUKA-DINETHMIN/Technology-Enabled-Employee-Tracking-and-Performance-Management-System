@@ -56,6 +56,7 @@ _SCREENSHOT_CONSECUTIVE_THRESHOLD = 2
 
 # Log interval in seconds
 _LOG_INTERVAL = 60.0
+_MODEL_RELOAD_INTERVAL_SEC = 300.0
 
 # Unproductive apps/sites list
 _UNPRODUCTIVE_APPS = ["youtube", "netflix", "facebook", "instagram", "tiktok", "gaming", "steam"]
@@ -228,6 +229,7 @@ class ActivityLogger:
         self._log_interval = log_interval
         self._high_risk_consecutive = 0
         self._model_guard_alert_sent = False
+        self._last_model_reload_attempt = 0.0
 
         # Lazy-load encryptor
         self._encryptor = None
@@ -260,6 +262,8 @@ class ActivityLogger:
             shutdown_event.wait(timeout=self._log_interval)
 
     def _do_log(self) -> None:
+        self._maybe_reload_model()
+
         # ── Determine break context ───────────────────────────────────
         in_break = False
         break_type = None
@@ -441,6 +445,22 @@ class ActivityLogger:
             "ActivityLog saved — user=%s risk=%.1f label=%s",
             self._user_id, risk_score, label,
         )
+
+    def _maybe_reload_model(self) -> None:
+        """Periodically retry model loading when engine is currently unavailable."""
+        try:
+            if self._engine.is_loaded:
+                return
+            now = time.time()
+            if (now - self._last_model_reload_attempt) < _MODEL_RELOAD_INTERVAL_SEC:
+                return
+            self._last_model_reload_attempt = now
+            if self._engine.load_model():
+                logger.info("Anomaly model reload succeeded for user=%s", self._user_id)
+                # Reset one-time guard so future genuine outages are still reported.
+                self._model_guard_alert_sent = False
+        except Exception as exc:
+            logger.debug("Anomaly model reload retry failed: %s", exc)
 
     def _warn_model_unavailable_once(self) -> None:
         """Emit a one-time warning/alert when anomaly model is unavailable."""
