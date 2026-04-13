@@ -165,7 +165,7 @@ def start_monitoring(
                 "session_id": session_id,
             },
         )
-        shutdown_event.set()
+        # Fail closed for C3 only; do not stop the whole app runtime.
         return None
 
     # Wire keyboard and mouse activity → idle detector
