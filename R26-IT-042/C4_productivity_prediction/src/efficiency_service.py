@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+import threading
+import time
 
 import joblib
 import pandas as pd
@@ -29,6 +31,10 @@ class EmployeeEfficiencyResult:
 class EfficiencyPredictionService:
     """Read-only C4 prediction service built on top of existing MongoDB data."""
 
+    _cache_lock = threading.Lock()
+    _result_cache: dict[tuple[str, str, str], tuple[float, list[EmployeeEfficiencyResult]]] = {}
+    _cache_ttl_seconds = 12.0
+
     def __init__(self, model_path: Optional[Path] = None, label_encoder_path: Optional[Path] = None) -> None:
         base = Path(__file__).resolve().parent
         self._model_path = model_path or (base / "productivity_classifier.joblib")
@@ -51,6 +57,16 @@ class EfficiencyPredictionService:
 
         if db_client is None or not getattr(db_client, "is_connected", False):
             return []
+
+        cache_key = (
+            str(getattr(db_client, "db_name", "")),
+            self._period_cache_key(period_start),
+            self._period_cache_key(period_end),
+        )
+
+        cached_rows = self._get_cached_results(cache_key)
+        if cached_rows is not None:
+            return cached_rows
 
         emp_col = db_client.get_collection("employees")
         task_col = db_client.get_collection("tasks")
@@ -141,7 +157,9 @@ class EfficiencyPredictionService:
                 )
             )
 
-        return sorted(results, key=lambda r: (r.predicted_label, -r.confidence, r.employee_id))
+        final_results = sorted(results, key=lambda r: (r.predicted_label, -r.confidence, r.employee_id))
+        self._store_cached_results(cache_key, final_results)
+        return final_results
 
     def _build_feature_row(self, emp: dict, tasks: list[dict], activity_logs: list[dict]) -> tuple[dict, dict]:
         now = datetime.now(timezone.utc)
@@ -312,6 +330,31 @@ class EfficiencyPredictionService:
     @staticmethod
     def _normalize_employee_id(value: str) -> str:
         return str(value or "").strip().lower()
+
+    @staticmethod
+    def _period_cache_key(value: Optional[datetime]) -> str:
+        if value is None:
+            return "all"
+        return value.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def _get_cached_results(cls, cache_key: tuple[str, str, str]) -> Optional[list[EmployeeEfficiencyResult]]:
+        now = time.time()
+        with cls._cache_lock:
+            cached = cls._result_cache.get(cache_key)
+            if cached is None:
+                return None
+            expires_at, rows = cached
+            if expires_at <= now:
+                cls._result_cache.pop(cache_key, None)
+                return None
+            return list(rows)
+
+    @classmethod
+    def _store_cached_results(cls, cache_key: tuple[str, str, str], rows: list[EmployeeEfficiencyResult]) -> None:
+        expires_at = time.time() + cls._cache_ttl_seconds
+        with cls._cache_lock:
+            cls._result_cache[cache_key] = (expires_at, list(rows))
 
     @staticmethod
     def _parse_dt(value) -> Optional[datetime]:
