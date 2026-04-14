@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import sys
 
@@ -40,6 +40,8 @@ class EfficiencyWindow(ctk.CTk):
         self._db = db
         self._refresh_ms = refresh_ms
         self._service = EfficiencyPredictionService()
+        self._period_var = ctk.StringVar(value="Current Month")
+        self._refresh_after_id = None
 
         self.title(f"{settings.APP_NAME} - Employee Efficiency Predictions")
         self.geometry("1280x760")
@@ -74,6 +76,17 @@ class EfficiencyWindow(ctk.CTk):
         topbar.pack(fill="x", padx=18, pady=(0, 10))
 
         ctk.CTkLabel(topbar, textvariable=self._last_updated_var, text_color=C_MUTED).pack(side="left")
+
+        period_picker = ctk.CTkOptionMenu(
+            topbar,
+            values=["Current Month", "Last 3 Months", "Last 6 Months", "All Time"],
+            variable=self._period_var,
+            fg_color=C_BORDER,
+            button_color=C_BLUE,
+            button_hover_color="#2563eb",
+            width=160,
+        )
+        period_picker.pack(side="right", padx=(8, 0))
 
         ctk.CTkButton(
             topbar,
@@ -154,7 +167,8 @@ class EfficiencyWindow(ctk.CTk):
 
     def _refresh(self) -> None:
         try:
-            rows = self._service.predict_all(self._db)
+            period_start, period_end = self._period_range()
+            rows = self._service.predict_all(self._db, period_start=period_start, period_end=period_end)
             self._render_rows(rows)
             self._render_summary(rows)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -164,7 +178,12 @@ class EfficiencyWindow(ctk.CTk):
             logger.exception("Efficiency window refresh failed")
             self._status_var.set(f"Refresh failed: {exc}")
 
-        self.after(self._refresh_ms, self._refresh)
+        if self._refresh_after_id is not None:
+            try:
+                self.after_cancel(self._refresh_after_id)
+            except Exception:
+                pass
+        self._refresh_after_id = self.after(self._refresh_ms, self._refresh)
 
     def _render_summary(self, rows) -> None:
         total = len(rows)
@@ -178,6 +197,24 @@ class EfficiencyWindow(ctk.CTk):
         self._set_card("medium", str(medium))
         self._set_card("low", str(low))
         self._set_card("avg_conf", f"{avg_conf * 100:.1f}%")
+
+    def _period_range(self):
+        choice = self._period_var.get().strip().lower()
+        now = datetime.now(timezone.utc)
+
+        if choice == "all time":
+            return None, None
+
+        if choice == "last 3 months":
+            start = now - timedelta(days=90)
+            return start, now
+
+        if choice == "last 6 months":
+            start = now - timedelta(days=180)
+            return start, now
+
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        return month_start, now
 
     def _render_rows(self, rows) -> None:
         for w in self._table.winfo_children():

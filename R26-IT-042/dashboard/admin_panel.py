@@ -1510,6 +1510,10 @@ class AdminPanel(ctk.CTk):
         self._employee_rows: dict = {}
         self._employee_name_cache: dict[str, str] = {}
         self._critical_sound_seen: set[str] = set()
+        self._efficiency_period_var = ctk.StringVar(value="Last Month")
+        self._efficiency_service = None
+        self._eff_pie_canvas = None
+        self._eff_bar_canvas = None
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_server = None
         self._closed = False
@@ -1685,7 +1689,195 @@ class AdminPanel(ctk.CTk):
             command=self._open_efficiency_window,
         ).pack(anchor="w", padx=18, pady=(0, 18))
 
+        charts_card = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=12)
+        charts_card.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+
+        control_row = ctk.CTkFrame(charts_card, fg_color="transparent")
+        control_row.pack(fill="x", padx=16, pady=(14, 6))
+
+        ctk.CTkLabel(
+            control_row,
+            text="Overall Efficiency Overview",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(side="left")
+
+        ctk.CTkOptionMenu(
+            control_row,
+            values=["Last Month", "Last 3 Months", "Last 6 Months", "All Time"],
+            variable=self._efficiency_period_var,
+            command=lambda _v: self._refresh_efficiency_overview(),
+            fg_color=C_BORDER,
+            button_color=C_BLUE,
+            button_hover_color="#2563eb",
+            width=170,
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            control_row,
+            text="Refresh Charts",
+            fg_color=C_TEAL,
+            hover_color=C_TEAL_D,
+            width=120,
+            command=self._refresh_efficiency_overview,
+        ).pack(side="right")
+
+        charts_row = ctk.CTkFrame(charts_card, fg_color="transparent")
+        charts_row.pack(fill="both", expand=True, padx=16, pady=(4, 12))
+
+        self._eff_pie_frame = ctk.CTkFrame(charts_row, fg_color="#10172b", corner_radius=10)
+        self._eff_pie_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        self._eff_bar_frame = ctk.CTkFrame(charts_row, fg_color="#10172b", corner_radius=10)
+        self._eff_bar_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
+
+        ctk.CTkLabel(
+            self._eff_pie_frame,
+            text="Prediction Distribution",
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+
+        ctk.CTkLabel(
+            self._eff_bar_frame,
+            text="Overall Efficiency Indicators",
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+
         return frame
+
+    def _efficiency_period_range(self):
+        choice = self._efficiency_period_var.get().strip().lower()
+        now = datetime.now(timezone.utc)
+
+        if choice == "all time":
+            return None, None
+        if choice == "last month":
+            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+            prev_month_end = month_start - timedelta(seconds=1)
+            prev_month_start = datetime(prev_month_end.year, prev_month_end.month, 1, tzinfo=timezone.utc)
+            return prev_month_start, prev_month_end
+        if choice == "last 3 months":
+            return now - timedelta(days=90), now
+        if choice == "last 6 months":
+            return now - timedelta(days=180), now
+        return now - timedelta(days=30), now
+
+    def _refresh_efficiency_overview(self) -> None:
+        if not self._db or not self._db.is_connected:
+            return
+
+        try:
+            from C4_productivity_prediction.src.efficiency_service import EfficiencyPredictionService
+        except Exception as exc:
+            logger.warning("Efficiency service import failed: %s", exc)
+            return
+
+        if self._efficiency_service is None:
+            self._efficiency_service = EfficiencyPredictionService()
+
+        try:
+            start, end = self._efficiency_period_range()
+            rows = self._efficiency_service.predict_all(self._db, period_start=start, period_end=end)
+            self._render_efficiency_charts(rows)
+        except Exception as exc:
+            logger.warning("Efficiency overview refresh failed: %s", exc)
+
+    def _render_efficiency_charts(self, rows) -> None:
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as exc:
+            logger.warning("Matplotlib unavailable for efficiency charts: %s", exc)
+            return
+
+        for host in [self._eff_pie_frame, self._eff_bar_frame]:
+            for child in host.winfo_children()[1:]:
+                child.destroy()
+
+        if self._eff_pie_canvas is not None:
+            try:
+                self._eff_pie_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self._eff_pie_canvas = None
+        if self._eff_bar_canvas is not None:
+            try:
+                self._eff_bar_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self._eff_bar_canvas = None
+
+        if not rows:
+            ctk.CTkLabel(self._eff_pie_frame, text="No data for selected period.", text_color=C_MUTED).pack(anchor="w", padx=10, pady=(8, 12))
+            ctk.CTkLabel(self._eff_bar_frame, text="No data for selected period.", text_color=C_MUTED).pack(anchor="w", padx=10, pady=(8, 12))
+            return
+
+        high = sum(1 for r in rows if str(r.predicted_label).lower() == "high")
+        medium = sum(1 for r in rows if str(r.predicted_label).lower() == "medium")
+        low = sum(1 for r in rows if str(r.predicted_label).lower() == "low")
+
+        total_assigned = sum(int(r.total_tasks_assigned) for r in rows)
+        total_pending = sum(int(r.total_tasks_pending) for r in rows)
+        total_on_time = sum(int(r.total_tasks_completed_on_time) for r in rows)
+        total_late = sum(int(r.total_tasks_completed_late) for r in rows)
+        total_completed = total_on_time + total_late
+
+        avg_prod = sum(float(r.productivity_score_input) for r in rows) / len(rows)
+        avg_work = sum(float(r.workload_score) for r in rows) / len(rows)
+        on_time_pct = (100.0 * total_on_time / total_completed) if total_completed else 0.0
+        pending_pct = (100.0 * total_pending / total_assigned) if total_assigned else 0.0
+        late_pct = (100.0 * total_late / total_completed) if total_completed else 0.0
+
+        fig_pie = Figure(figsize=(4.8, 2.8), dpi=100, facecolor="#10172b")
+        ax_pie = fig_pie.add_subplot(111)
+        ax_pie.set_facecolor("#10172b")
+
+        parts = [("High", high, C_GREEN), ("Medium", medium, C_AMBER), ("Low", low, C_RED)]
+        parts = [p for p in parts if p[1] > 0]
+        if not parts:
+            parts = [("No Data", 1, C_MUTED)]
+
+        labels = [p[0] for p in parts]
+        sizes = [p[1] for p in parts]
+        colors = [p[2] for p in parts]
+        _, _, autotexts = ax_pie.pie(
+            sizes,
+            labels=labels,
+            colors=colors,
+            autopct="%1.1f%%",
+            startangle=90,
+            textprops={"color": C_TEXT, "fontsize": 9},
+        )
+        for t in autotexts:
+            t.set_color(C_TEXT)
+            t.set_fontsize(8)
+        ax_pie.axis("equal")
+        fig_pie.tight_layout()
+
+        self._eff_pie_canvas = FigureCanvasTkAgg(fig_pie, master=self._eff_pie_frame)
+        self._eff_pie_canvas.draw()
+        self._eff_pie_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(0, 10))
+
+        fig_bar = Figure(figsize=(4.8, 2.8), dpi=100, facecolor="#10172b")
+        ax_bar = fig_bar.add_subplot(111)
+        ax_bar.set_facecolor("#10172b")
+        names = ["Avg Prod", "Avg Work", "On-time %", "Pending %", "Late %"]
+        values = [avg_prod, avg_work, on_time_pct, pending_pct, late_pct]
+        colors = [C_TEAL, C_BLUE, C_GREEN, C_AMBER, C_RED]
+        ax_bar.bar(names, values, color=colors)
+        ax_bar.set_ylim(0, 100)
+        ax_bar.grid(axis="y", color="#23324d", linestyle="-", linewidth=0.6)
+        ax_bar.tick_params(axis="x", colors=C_TEXT, labelsize=8, rotation=10)
+        ax_bar.tick_params(axis="y", colors=C_TEXT, labelsize=8)
+        for sp in ax_bar.spines.values():
+            sp.set_color("#23324d")
+        fig_bar.tight_layout()
+
+        self._eff_bar_canvas = FigureCanvasTkAgg(fig_bar, master=self._eff_bar_frame)
+        self._eff_bar_canvas.draw()
+        self._eff_bar_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(0, 10))
 
     def _open_efficiency_window(self) -> None:
         script_path = _PROJECT_ROOT / "C4_productivity_prediction" / "src" / "launch_efficiency_window.py"
@@ -1810,6 +2002,8 @@ class AdminPanel(ctk.CTk):
                 self._refresh_geo_policy_ui(status_msg="")
             except Exception:
                 pass
+        elif tab_id == "efficiency":
+            self._refresh_efficiency_overview()
 
         self._page_title.configure(text=tab_id.title())
         for tid, btn in self._nav_btns.items():
@@ -3350,6 +3544,8 @@ class AdminPanel(ctk.CTk):
             self._refresh_live_grid()
         elif self._active_tab == "employees":
             self._refresh_employees()
+        elif self._active_tab == "efficiency":
+            self._refresh_efficiency_overview()
         self._poll_after_id = self.after(POLL_INTERVAL_MS, self._do_poll)
 
     # ------------------------------------------------------------------

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,6 +8,8 @@ from typing import Optional
 
 import joblib
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,7 +45,7 @@ class EfficiencyPredictionService:
             raise ValueError("Model does not expose feature_names_in_.")
         self._feature_names = [str(n) for n in names]
 
-    def predict_all(self, db_client) -> list[EmployeeEfficiencyResult]:
+    def predict_all(self, db_client, period_start: Optional[datetime] = None, period_end: Optional[datetime] = None) -> list[EmployeeEfficiencyResult]:
         if self._model is None or self._label_encoder is None:
             self.load()
 
@@ -60,26 +63,52 @@ class EfficiencyPredictionService:
         if not employees:
             return []
 
-        rows: list[dict] = []
-        meta: list[dict] = []
-
+        employee_lookup: dict[str, dict] = {}
         for emp in employees:
             employee_id = str(emp.get("employee_id") or "").strip()
             if not employee_id:
                 continue
+            employee_lookup.setdefault(self._normalize_employee_id(employee_id), emp)
 
-            tasks = []
-            if task_col is not None:
-                tasks = list(task_col.find({"employee_id": employee_id}, {"_id": 0}))
+        tasks_by_employee: dict[str, list[dict]] = {key: [] for key in employee_lookup}
+        orphan_task_ids: list[str] = []
+        if task_col is not None:
+            for task in task_col.find({}, {"_id": 0}):
+                raw_employee_id = str(task.get("employee_id") or "").strip()
+                if not raw_employee_id:
+                    continue
+                normalized_employee_id = self._normalize_employee_id(raw_employee_id)
+                if normalized_employee_id not in employee_lookup:
+                    orphan_task_ids.append(raw_employee_id)
+                    continue
+                tasks_by_employee.setdefault(normalized_employee_id, []).append(task)
 
-            activity_logs = []
-            if activity_col is not None:
-                activity_logs = list(
-                    activity_col.find(
-                        {"user_id": employee_id},
-                        {"_id": 0, "productivity_score": 1, "timestamp": 1},
-                    ).sort("timestamp", -1).limit(20)
-                )
+        activity_by_employee: dict[str, list[dict]] = {key: [] for key in employee_lookup}
+        if activity_col is not None:
+            for doc in activity_col.find({}, {"_id": 0, "productivity_score": 1, "timestamp": 1, "user_id": 1}):
+                raw_user_id = str(doc.get("user_id") or "").strip()
+                if not raw_user_id:
+                    continue
+                normalized_user_id = self._normalize_employee_id(raw_user_id)
+                if normalized_user_id not in employee_lookup:
+                    continue
+                activity_by_employee.setdefault(normalized_user_id, []).append(doc)
+
+        if orphan_task_ids:
+            orphan_count = len(orphan_task_ids)
+            preview = sorted(set(orphan_task_ids))[:5]
+            logger.warning("Efficiency service ignored %s task records with no matching employee: %s", orphan_count, preview)
+
+        rows: list[dict] = []
+        meta: list[dict] = []
+
+        for employee_key, emp in employee_lookup.items():
+            employee_id = str(emp.get("employee_id") or "").strip()
+            if not employee_id:
+                continue
+
+            tasks = self._filter_tasks_for_period(tasks_by_employee.get(employee_key, []), period_start, period_end)
+            activity_logs = self._filter_activity_for_period(activity_by_employee.get(employee_key, []), period_start, period_end)
 
             row, stats = self._build_feature_row(emp, tasks, activity_logs)
             rows.append(row)
@@ -281,6 +310,10 @@ class EfficiencyPredictionService:
         return sorted(counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
 
     @staticmethod
+    def _normalize_employee_id(value: str) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
     def _parse_dt(value) -> Optional[datetime]:
         if not value:
             return None
@@ -327,3 +360,54 @@ class EfficiencyPredictionService:
         if not values:
             return None
         return sum(values) / len(values)
+
+    def _filter_tasks_for_period(
+        self,
+        tasks: list[dict],
+        period_start: Optional[datetime],
+        period_end: Optional[datetime],
+    ) -> list[dict]:
+        if period_start is None or period_end is None:
+            return tasks
+
+        filtered: list[dict] = []
+        for task in tasks:
+            ref_dt = self._task_reference_dt(task)
+            if ref_dt is None:
+                continue
+            if period_start <= ref_dt <= period_end:
+                filtered.append(task)
+        return filtered
+
+    def _filter_activity_for_period(
+        self,
+        activity_logs: list[dict],
+        period_start: Optional[datetime],
+        period_end: Optional[datetime],
+    ) -> list[dict]:
+        if period_start is None or period_end is None:
+            return activity_logs
+
+        filtered: list[dict] = []
+        for doc in activity_logs:
+            ts = self._parse_dt(doc.get("timestamp"))
+            if ts is None:
+                continue
+            if period_start <= ts <= period_end:
+                filtered.append(doc)
+        return filtered
+
+    def _task_reference_dt(self, task: dict) -> Optional[datetime]:
+        completed = self._parse_dt(task.get("completed_at"))
+        if completed is not None:
+            return completed
+
+        assigned = self._parse_dt(task.get("assigned_at"))
+        if assigned is not None:
+            return assigned
+
+        due = self._task_due_dt(task)
+        if due is not None:
+            return due
+
+        return None
