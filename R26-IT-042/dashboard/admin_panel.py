@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import re
 import asyncio
@@ -1561,6 +1562,7 @@ class AdminPanel(ctk.CTk):
             ("dashboard",  "  Dashboard"),
             ("employees",  "  Employees"),
             ("live_grid",  "  Live Monitor"),
+            ("efficiency", "  Efficiency"),
             ("alerts",     "  Alerts"),
             ("tasks",      "  Tasks"),
             ("attendance", "  Attendance"),
@@ -1613,6 +1615,7 @@ class AdminPanel(ctk.CTk):
             "dashboard":  self._build_dashboard_tab(),
             "employees":  self._build_employees_tab(),
             "live_grid":  self._tab_live_grid(),
+            "efficiency": self._build_efficiency_tab(),
             "alerts":     self._build_alerts_tab(),
             "tasks":      self._build_tasks_tab(),
             "attendance": self._build_attendance_tab(),
@@ -1635,6 +1638,66 @@ class AdminPanel(ctk.CTk):
         self._image_cache = {} # {user_id: {image, timestamp, ctk_image}} - Cache for 30 seconds
         
         return frame
+
+    def _build_efficiency_tab(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self._tab_frame, fg_color=C_BG, corner_radius=0)
+
+        header = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=12)
+        header.pack(fill="x", padx=20, pady=(18, 12))
+
+        ctk.CTkLabel(
+            header,
+            text="Employee Efficiency Predictions",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(anchor="w", padx=18, pady=(16, 4))
+
+        ctk.CTkLabel(
+            header,
+            text="Open the separate read-only C4 window to review predicted efficiency for each employee.",
+            font=ctk.CTkFont(size=12),
+            text_color=C_MUTED,
+        ).pack(anchor="w", padx=18, pady=(0, 10))
+
+        body = ctk.CTkFrame(frame, fg_color=C_CARD, corner_radius=12)
+        body.pack(fill="x", padx=20, pady=(0, 12))
+
+        ctk.CTkLabel(
+            body,
+            text="This view does not change tasks, attendance, or monitoring data.",
+            font=ctk.CTkFont(size=12),
+            text_color=C_TEXT,
+        ).pack(anchor="w", padx=18, pady=(16, 6))
+
+        ctk.CTkLabel(
+            body,
+            text="Use the button below to launch the separate efficiency analysis window.",
+            font=ctk.CTkFont(size=12),
+            text_color=C_MUTED,
+        ).pack(anchor="w", padx=18, pady=(0, 14))
+
+        ctk.CTkButton(
+            body,
+            text="Open Efficiency Window",
+            fg_color=C_TEAL,
+            hover_color=C_TEAL_D,
+            height=40,
+            command=self._open_efficiency_window,
+        ).pack(anchor="w", padx=18, pady=(0, 18))
+
+        return frame
+
+    def _open_efficiency_window(self) -> None:
+        script_path = _PROJECT_ROOT / "C4_productivity_prediction" / "src" / "launch_efficiency_window.py"
+        if not script_path.exists():
+            messagebox.showerror("Efficiency Window", f"Launcher not found: {script_path}")
+            return
+
+        try:
+            subprocess.Popen([sys.executable, str(script_path)], cwd=str(_PROJECT_ROOT))
+        except Exception as exc:
+            logger.exception("Failed to launch efficiency window")
+            messagebox.showerror("Efficiency Window", f"Failed to launch efficiency window: {exc}")
 
     def _refresh_live_grid(self) -> None:
         threading.Thread(target=self._fetch_live_grid, daemon=True).start()
