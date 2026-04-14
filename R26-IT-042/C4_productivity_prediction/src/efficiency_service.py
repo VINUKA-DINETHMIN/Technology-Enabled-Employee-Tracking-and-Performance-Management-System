@@ -1,0 +1,329 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import joblib
+import pandas as pd
+
+
+@dataclass
+class EmployeeEfficiencyResult:
+    employee_id: str
+    full_name: str
+    predicted_label: str
+    confidence: float
+    productivity_score_input: float
+    workload_score: float
+    total_tasks_assigned: int
+    total_tasks_pending: int
+    total_tasks_completed_on_time: int
+    total_tasks_completed_late: int
+
+
+class EfficiencyPredictionService:
+    """Read-only C4 prediction service built on top of existing MongoDB data."""
+
+    def __init__(self, model_path: Optional[Path] = None, label_encoder_path: Optional[Path] = None) -> None:
+        base = Path(__file__).resolve().parent
+        self._model_path = model_path or (base / "productivity_classifier.joblib")
+        self._label_encoder_path = label_encoder_path or (base / "label_encoder.joblib")
+        self._model = None
+        self._label_encoder = None
+        self._feature_names: list[str] = []
+
+    def load(self) -> None:
+        self._model = joblib.load(self._model_path)
+        self._label_encoder = joblib.load(self._label_encoder_path)
+        names = getattr(self._model, "feature_names_in_", None)
+        if names is None:
+            raise ValueError("Model does not expose feature_names_in_.")
+        self._feature_names = [str(n) for n in names]
+
+    def predict_all(self, db_client) -> list[EmployeeEfficiencyResult]:
+        if self._model is None or self._label_encoder is None:
+            self.load()
+
+        if db_client is None or not getattr(db_client, "is_connected", False):
+            return []
+
+        emp_col = db_client.get_collection("employees")
+        task_col = db_client.get_collection("tasks")
+        activity_col = db_client.get_collection("activity_logs")
+
+        if emp_col is None:
+            return []
+
+        employees = list(emp_col.find({}, {"_id": 0}))
+        if not employees:
+            return []
+
+        rows: list[dict] = []
+        meta: list[dict] = []
+
+        for emp in employees:
+            employee_id = str(emp.get("employee_id") or "").strip()
+            if not employee_id:
+                continue
+
+            tasks = []
+            if task_col is not None:
+                tasks = list(task_col.find({"employee_id": employee_id}, {"_id": 0}))
+
+            activity_logs = []
+            if activity_col is not None:
+                activity_logs = list(
+                    activity_col.find(
+                        {"user_id": employee_id},
+                        {"_id": 0, "productivity_score": 1, "timestamp": 1},
+                    ).sort("timestamp", -1).limit(20)
+                )
+
+            row, stats = self._build_feature_row(emp, tasks, activity_logs)
+            rows.append(row)
+            meta.append(stats)
+
+        if not rows:
+            return []
+
+        frame = pd.DataFrame(rows, columns=self._feature_names)
+        pred_encoded = self._model.predict(frame)
+        pred_proba = self._model.predict_proba(frame)
+        labels = self._label_encoder.inverse_transform(pred_encoded)
+
+        results: list[EmployeeEfficiencyResult] = []
+        for idx, label in enumerate(labels):
+            confidence = float(pred_proba[idx].max())
+            stats = meta[idx]
+            results.append(
+                EmployeeEfficiencyResult(
+                    employee_id=stats["employee_id"],
+                    full_name=stats["full_name"],
+                    predicted_label=str(label),
+                    confidence=confidence,
+                    productivity_score_input=float(stats["productivity_score_input"]),
+                    workload_score=float(stats["workload_score"]),
+                    total_tasks_assigned=int(stats["total_tasks_assigned"]),
+                    total_tasks_pending=int(stats["total_tasks_pending"]),
+                    total_tasks_completed_on_time=int(stats["total_tasks_completed_on_time"]),
+                    total_tasks_completed_late=int(stats["total_tasks_completed_late"]),
+                )
+            )
+
+        return sorted(results, key=lambda r: (r.predicted_label, -r.confidence, r.employee_id))
+
+    def _build_feature_row(self, emp: dict, tasks: list[dict], activity_logs: list[dict]) -> tuple[dict, dict]:
+        now = datetime.now(timezone.utc)
+        employee_id = str(emp.get("employee_id") or "UNKNOWN")
+        full_name = str(emp.get("full_name") or employee_id)
+
+        completed = [t for t in tasks if str(t.get("status") or "") == "completed"]
+        pending_like = [t for t in tasks if str(t.get("status") or "") in {"pending", "in_progress", "paused"}]
+
+        on_time = 0
+        late = 0
+        time_deviations_hours: list[float] = []
+        allocated_hours_values: list[float] = []
+        actual_hours_values: list[float] = []
+
+        high_on_time = 0
+        medium_on_time = 0
+        low_on_time = 0
+
+        categories: list[str] = []
+        priorities: list[str] = []
+
+        latest_assigned = None
+        latest_deadline = None
+        active_status = "pending"
+
+        for t in tasks:
+            assigned_at = self._parse_dt(t.get("assigned_at"))
+            due = self._task_due_dt(t)
+            completed_at = self._parse_dt(t.get("completed_at"))
+
+            if assigned_at and (latest_assigned is None or assigned_at > latest_assigned):
+                latest_assigned = assigned_at
+            if due and (latest_deadline is None or due > latest_deadline):
+                latest_deadline = due
+
+            p = str(t.get("priority") or "medium").lower()
+            priorities.append(p)
+
+            category = str(t.get("task_category") or "general").strip().lower()
+            if not category:
+                category = "general"
+            categories.append(category)
+
+            allocated_minutes = self._to_float(t.get("allocated_minutes"), default=0.0)
+            if allocated_minutes > 0:
+                allocated_hours_values.append(allocated_minutes / 60.0)
+
+            actual_seconds = self._to_float(t.get("actual_seconds"), default=0.0)
+            if actual_seconds > 0:
+                actual_hours_values.append(actual_seconds / 3600.0)
+
+            status = str(t.get("status") or "pending")
+            if status == "in_progress":
+                active_status = "in_progress"
+            elif status == "paused" and active_status != "in_progress":
+                active_status = "paused"
+
+            if completed_at and due:
+                dev_h = (completed_at - due).total_seconds() / 3600.0
+                time_deviations_hours.append(dev_h)
+                is_on_time = completed_at <= due
+                if is_on_time:
+                    on_time += 1
+                    if p == "high":
+                        high_on_time += 1
+                    elif p == "medium":
+                        medium_on_time += 1
+                    else:
+                        low_on_time += 1
+                else:
+                    late += 1
+
+        total_assigned = len(tasks)
+        total_pending = len(pending_like)
+        avg_dev = sum(time_deviations_hours) / len(time_deviations_hours) if time_deviations_hours else 0.0
+
+        allocated_hours = sum(allocated_hours_values) if allocated_hours_values else 1.0
+        actual_hours = sum(actual_hours_values) if actual_hours_values else 0.0
+
+        if allocated_hours <= 0.0:
+            allocated_hours = 1.0
+
+        completion_ratio = (on_time + late) / total_assigned if total_assigned else 0.0
+        backlog_ratio = total_pending / total_assigned if total_assigned else 0.0
+        workload_score = max(0.0, min(100.0, 100.0 * (0.55 * completion_ratio + 0.45 * (1.0 - backlog_ratio))))
+
+        productivity_input = self._activity_productivity(activity_logs)
+        if productivity_input is None:
+            productivity_input = max(0.0, min(100.0, workload_score))
+
+        dominant_priority = self._mode_or_default(priorities, "medium")
+        dominant_category = self._mode_or_default(categories, "general")
+        similar_tasks_completed_count = sum(1 for t in completed if str(t.get("task_category") or "general").strip().lower() == dominant_category)
+
+        join_date = str(emp.get("created_at") or now.date().isoformat())
+
+        assigned_date = self._date_to_days((latest_assigned or now).date().isoformat())
+        deadline_date = self._date_to_days((latest_deadline or now).date().isoformat())
+        join_date_value = self._date_to_days(join_date)
+
+        feature_row = {
+            "employee_id": employee_id,
+            "department": str(emp.get("department") or "IT"),
+            "role": str(emp.get("role") or "Employee"),
+            "join_date": join_date_value,
+            "task_category": dominant_category,
+            "task_priority": dominant_priority,
+            "allocated_hours": float(round(allocated_hours, 3)),
+            "actual_hours": float(round(actual_hours, 3)),
+            "task_status": active_status,
+            "assigned_date": assigned_date,
+            "deadline_date": deadline_date,
+            "month": int(now.month),
+            "year": int(now.year),
+            "total_tasks_assigned": int(total_assigned),
+            "total_tasks_completed_on_time": int(on_time),
+            "total_tasks_completed_late": int(late),
+            "total_tasks_pending": int(total_pending),
+            "high_priority_completed_on_time": int(high_on_time),
+            "medium_priority_completed_on_time": int(medium_on_time),
+            "low_priority_completed_on_time": int(low_on_time),
+            "average_time_deviation": float(round(avg_dev, 3)),
+            "similar_tasks_completed_count": int(similar_tasks_completed_count),
+            "workload_score": float(round(workload_score, 3)),
+            "productivity_score": float(round(productivity_input, 3)),
+        }
+
+        stats = {
+            "employee_id": employee_id,
+            "full_name": full_name,
+            "productivity_score_input": feature_row["productivity_score"],
+            "workload_score": feature_row["workload_score"],
+            "total_tasks_assigned": total_assigned,
+            "total_tasks_pending": total_pending,
+            "total_tasks_completed_on_time": on_time,
+            "total_tasks_completed_late": late,
+        }
+
+        # Ensure exact model ordering and fill any missing with reasonable defaults.
+        ordered = {}
+        for col in self._feature_names:
+            if col in feature_row:
+                ordered[col] = feature_row[col]
+            else:
+                ordered[col] = 0
+
+        return ordered, stats
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            if value in (None, ""):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _mode_or_default(values: list[str], default: str) -> str:
+        if not values:
+            return default
+        counts: dict[str, int] = {}
+        for v in values:
+            counts[v] = counts.get(v, 0) + 1
+        return sorted(counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
+
+    @staticmethod
+    def _parse_dt(value) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _date_to_days(value: str) -> int:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return dt.date().toordinal()
+        except Exception:
+            return 0
+
+    def _task_due_dt(self, task: dict) -> Optional[datetime]:
+        due_at = task.get("due_at")
+        parsed = self._parse_dt(due_at)
+        if parsed is not None:
+            return parsed
+
+        due_date = str(task.get("due_date") or "").strip()
+        due_time = str(task.get("due_time") or "").strip() or "23:59"
+        if not due_date:
+            return None
+        try:
+            dt = datetime.fromisoformat(f"{due_date}T{due_time}:00")
+            return dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    def _activity_productivity(self, activity_logs: list[dict]) -> Optional[float]:
+        values: list[float] = []
+        for doc in activity_logs:
+            try:
+                score = float(doc.get("productivity_score"))
+                values.append(score)
+            except Exception:
+                continue
+        if not values:
+            return None
+        return sum(values) / len(values)
