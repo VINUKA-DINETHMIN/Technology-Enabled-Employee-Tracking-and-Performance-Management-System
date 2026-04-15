@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
 
@@ -42,6 +44,9 @@ class EfficiencyWindow(ctk.CTk):
         self._service = EfficiencyPredictionService()
         self._period_var = ctk.StringVar(value="Current Month")
         self._refresh_after_id = None
+        
+        # Async rendering executor
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="EfficiencyRefresh")
 
         self.title(f"{settings.APP_NAME} - Employee Efficiency Predictions")
         self.geometry("1280x760")
@@ -166,24 +171,36 @@ class EfficiencyWindow(ctk.CTk):
             card._value_label.configure(text=value)
 
     def _refresh(self) -> None:
-        try:
-            period_start, period_end = self._period_range()
-            rows = self._service.predict_all(self._db, period_start=period_start, period_end=period_end)
-            self._render_rows(rows)
-            self._render_summary(rows)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._last_updated_var.set(f"Last updated: {now}")
-            self._status_var.set(f"Read-only prediction completed for {len(rows)} employees.")
-        except Exception as exc:
-            logger.exception("Efficiency window refresh failed")
-            self._status_var.set(f"Refresh failed: {exc}")
-
+        # Submit fetch work to background thread
+        self._executor.submit(self._fetch_and_render)
+        
+        # Schedule next refresh
         if self._refresh_after_id is not None:
             try:
                 self.after_cancel(self._refresh_after_id)
             except Exception:
                 pass
         self._refresh_after_id = self.after(self._refresh_ms, self._refresh)
+    
+    def _fetch_and_render(self) -> None:
+        """Fetch predictions in background thread, then render on main thread."""
+        try:
+            period_start, period_end = self._period_range()
+            rows = self._service.predict_all(self._db, period_start=period_start, period_end=period_end)
+            
+            # Render on main thread
+            self.after(0, lambda: self._render_on_main_thread(rows))
+        except Exception as exc:
+            logger.exception("Efficiency window refresh failed")
+            self.after(0, lambda: self._status_var.set(f"Refresh failed: {exc}"))
+    
+    def _render_on_main_thread(self, rows) -> None:
+        """Render results (must be called on main thread)."""
+        self._render_rows(rows)
+        self._render_summary(rows)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._last_updated_var.set(f"Last updated: {now}")
+        self._status_var.set(f"Read-only prediction completed for {len(rows)} employees.")
 
     def _render_summary(self, rows) -> None:
         total = len(rows)
