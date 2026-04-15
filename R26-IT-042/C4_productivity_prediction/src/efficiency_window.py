@@ -46,7 +46,7 @@ class EfficiencyWindow(ctk.CTk):
         self._refresh_after_id = None
         
         # Async rendering executor
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=\"EfficiencyRefresh\")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="EfficiencyRefresh")
 
         self.title(f"{settings.APP_NAME} - Employee Efficiency Predictions")
         self.geometry("1280x760")
