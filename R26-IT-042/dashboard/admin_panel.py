@@ -1515,6 +1515,9 @@ class AdminPanel(ctk.CTk):
         self._efficiency_service = None
         self._eff_pie_canvas = None
         self._eff_bar_canvas = None
+        self._alerts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="AlertsRefresh")
+        self._alerts_refresh_inflight = False
+        self._alerts_last_signature = ""
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_server = None
         self._closed = False
@@ -2566,7 +2569,15 @@ class AdminPanel(ctk.CTk):
         topbar = ctk.CTkFrame(frame, fg_color="transparent")
         topbar.pack(fill="x", padx=20, pady=(16, 8))
         ctk.CTkLabel(topbar, text="Alert Feed", font=ctk.CTkFont(size=14, weight="bold"), text_color=C_TEXT).pack(side="left")
-        ctk.CTkButton(topbar, text="Refresh", width=90, fg_color=C_BORDER, hover_color=C_BLUE, command=self._refresh_alerts).pack(side="right")
+        ctk.CTkButton(topbar, text="Refresh", width=90, fg_color=C_BORDER, hover_color=C_BLUE, command=lambda: self._refresh_alerts(force=True)).pack(side="right")
+        ctk.CTkButton(
+            topbar,
+            text="Delete Old",
+            width=100,
+            fg_color="#7f1d1d",
+            hover_color="#991b1b",
+            command=self._delete_old_alerts,
+        ).pack(side="right", padx=(0, 8))
         ctk.CTkButton(topbar, text="Configure Breaks", width=130, fg_color=C_TEAL_D, hover_color=C_TEAL,
                       command=self._open_break_config_popup).pack(side="right", padx=(0, 8))
 
@@ -2574,24 +2585,112 @@ class AdminPanel(ctk.CTk):
         self._alerts_frame.pack(fill="both", expand=True, padx=20, pady=(4, 16))
         return frame
 
-    def _refresh_alerts(self) -> None:
+    def _refresh_alerts(self, force: bool = False) -> None:
         if not self._db or not self._db.is_connected:
             return
+
+        # Avoid overlapping refreshes when polling is active.
+        if self._alerts_refresh_inflight:
+            return
+        self._alerts_refresh_inflight = True
+
+        if force:
+            for w in self._alerts_frame.winfo_children():
+                w.destroy()
+            ctk.CTkLabel(self._alerts_frame, text="Loading alerts...", text_color=C_MUTED).pack(anchor="w", padx=8, pady=8)
+
+        self._alerts_executor.submit(self._fetch_alerts_worker)
+
+    def _fetch_alerts_worker(self) -> None:
+        try:
+            col = self._db.get_collection("alerts")
+            if col is None:
+                self.after(0, lambda: self._apply_alerts_refresh([], "", None))
+                return
+
+            projection = {
+                "_id": 1,
+                "timestamp": 1,
+                "user_id": 1,
+                "employee_name": 1,
+                "risk_score": 1,
+                "level": 1,
+                "factors": 1,
+                "resolved": 1,
+            }
+            alerts = list(
+                col.find({"resolved": {"$ne": True}}, projection)
+                .sort("timestamp", -1)
+                .limit(50)
+            )
+
+            signature_parts = []
+            for a in alerts:
+                signature_parts.append(
+                    f"{a.get('_id')}|{a.get('timestamp')}|{a.get('level')}|{a.get('risk_score')}"
+                )
+            signature = "\n".join(signature_parts)
+            self.after(0, lambda rows=alerts, sig=signature: self._apply_alerts_refresh(rows, sig, None))
+        except Exception as exc:
+            self.after(0, lambda err=str(exc): self._apply_alerts_refresh([], "", err))
+
+    def _apply_alerts_refresh(self, alerts: list, signature: str, error: Optional[str]) -> None:
+        self._alerts_refresh_inflight = False
+
+        if error:
+            for w in self._alerts_frame.winfo_children():
+                w.destroy()
+            ctk.CTkLabel(self._alerts_frame, text=f"Error: {error}", text_color=C_RED).pack(anchor="w", padx=8, pady=8)
+            return
+
+        # Skip expensive UI rebuild when data did not change.
+        if signature == self._alerts_last_signature:
+            return
+        self._alerts_last_signature = signature
+
         for w in self._alerts_frame.winfo_children():
             w.destroy()
+
+        if not alerts:
+            ctk.CTkLabel(self._alerts_frame, text="No active alerts.", text_color=C_MUTED).pack(anchor="w", padx=8, pady=8)
+            return
+
+        for alert in alerts:
+            self._add_alert_card(alert)
+
+    def _delete_old_alerts(self) -> None:
+        if not self._db or not self._db.is_connected:
+            return
+
+        msg = (
+            "Delete old alerts now?\n\n"
+            "This removes:\n"
+            "- Resolved alerts\n"
+            "- Alerts older than 30 days\n\n"
+            "Unresolved recent alerts are kept."
+        )
+        if not messagebox.askyesno("Delete Old Alerts", msg):
+            return
+
         try:
             col = self._db.get_collection("alerts")
             if col is None:
                 return
-            alerts = list(
-                col.find({"resolved": {"$ne": True}})
-                .sort("timestamp", -1)
-                .limit(50)
+
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            result = col.delete_many(
+                {
+                    "$or": [
+                        {"resolved": True},
+                        {"timestamp": {"$lt": cutoff}},
+                    ]
+                }
             )
-            for alert in alerts:
-                self._add_alert_card(alert)
+            self._alerts_last_signature = ""
+            self._refresh_alerts(force=True)
+            messagebox.showinfo("Delete Old Alerts", f"Deleted {result.deleted_count} alert(s).")
         except Exception as exc:
-            ctk.CTkLabel(self._alerts_frame, text=f"Error: {exc}", text_color=C_RED).pack()
+            messagebox.showerror("Delete Old Alerts", str(exc))
 
     def _add_alert_card(self, alert: dict, prepend: bool = False) -> None:
         level = alert.get("level", "LOW").upper()
@@ -2642,6 +2741,7 @@ class AdminPanel(ctk.CTk):
                 except Exception:
                     query = {"_id": alert_id}
                 col.update_one(query, {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc).isoformat()}})
+            self._alerts_last_signature = ""
             card_widget.destroy()
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -3613,6 +3713,10 @@ class AdminPanel(ctk.CTk):
         try:
             if self._ws_server is not None:
                 self._ws_server.close()
+        except Exception:
+            pass
+        try:
+            self._alerts_executor.shutdown(wait=False)
         except Exception:
             pass
         self.destroy()
