@@ -2518,7 +2518,7 @@ class AdminPanel(ctk.CTk):
             if payload.get("type") != "alert":
                 continue
             persisted = self._persist_realtime_alert(payload)
-            self.after(0, lambda p=persisted: self._add_alert_card(p, prepend=True))
+            self.after(0, lambda p=persisted: self._add_realtime_alert_card(p))
 
     async def _ws_server_task(self, host: str, port: int) -> None:
         if not _HAS_WEBSOCKETS:
@@ -2692,14 +2692,57 @@ class AdminPanel(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("Delete Old Alerts", str(exc))
 
+    def _add_realtime_alert_card(self, alert: dict) -> None:
+        """Safely add realtime alert card; avoids UI race issues during refresh."""
+        if self._closed or not hasattr(self, "_alerts_frame"):
+            return
+        try:
+            if not self._alerts_frame.winfo_exists():
+                return
+        except Exception:
+            return
+
+        # Force next poll refresh to reconcile with DB order/state.
+        self._alerts_last_signature = ""
+        try:
+            self._add_alert_card(alert, prepend=True)
+        except Exception as exc:
+            logger.debug("Realtime alert insert skipped: %s", exc)
+
     def _add_alert_card(self, alert: dict, prepend: bool = False) -> None:
+        if not hasattr(self, "_alerts_frame"):
+            return
+        try:
+            if not self._alerts_frame.winfo_exists():
+                return
+        except Exception:
+            return
+
         level = alert.get("level", "LOW").upper()
         color = _level_color(level)
         emp_id = str(alert.get("user_id", "?"))
         emp_name = alert.get("employee_name") or self._employee_name(emp_id)
 
         card = ctk.CTkFrame(self._alerts_frame, fg_color=C_CARD, corner_radius=12)
-        card.pack(fill="x", pady=4, before=self._alerts_frame.winfo_children()[0] if prepend and self._alerts_frame.winfo_children() else None)
+        if prepend:
+            before_widget = None
+            for child in self._alerts_frame.winfo_children():
+                try:
+                    if child.winfo_exists() and child.winfo_manager() == "pack":
+                        before_widget = child
+                        break
+                except Exception:
+                    continue
+
+            if before_widget is not None:
+                try:
+                    card.pack(fill="x", pady=4, before=before_widget)
+                except Exception:
+                    card.pack(fill="x", pady=4)
+            else:
+                card.pack(fill="x", pady=4)
+        else:
+            card.pack(fill="x", pady=4)
 
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=16, pady=(12, 4))
