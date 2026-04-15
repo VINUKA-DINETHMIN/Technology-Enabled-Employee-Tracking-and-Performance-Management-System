@@ -37,6 +37,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
@@ -281,6 +282,9 @@ class ActivityLogger:
         # Lazy-load encryptor
         self._encryptor = None
         self._thread: Optional[threading.Thread] = None
+        
+        # ThreadPool for async DB writes (non-blocking)
+        self._db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ActivityLogDB")
 
     def start(self, shutdown_event: Optional[threading.Event] = None) -> None:
         """Start the 60-second logging loop in a daemon thread."""
@@ -549,7 +553,12 @@ class ActivityLogger:
                 logger.warning("Model-unavailable alert send error: %s", exc)
 
     def _save_document(self, doc: dict) -> None:
-        """Save document to MongoDB or enqueue offline."""
+        """Save document to MongoDB or enqueue offline (async background)."""
+        # Submit to thread pool so DB write doesn't block the 60-sec logging loop
+        self._db_executor.submit(self._save_document_blocking, doc)
+    
+    def _save_document_blocking(self, doc: dict) -> None:
+        """Blocking DB save (runs in background thread pool)."""
         if self._queue.is_online() and self._db is not None and self._db.is_connected:
             col = self._db.get_collection("activity_logs")
             if col is not None:

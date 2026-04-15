@@ -34,7 +34,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 # Polling interval for active window detection (seconds)
-_POLL_INTERVAL = 1.0
+_POLL_INTERVAL = 5.0
 
 
 def _get_active_app() -> str:
