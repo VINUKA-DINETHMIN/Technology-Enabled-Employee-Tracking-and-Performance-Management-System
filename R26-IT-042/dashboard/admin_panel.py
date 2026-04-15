@@ -25,6 +25,7 @@ import asyncio
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -1518,6 +1519,12 @@ class AdminPanel(ctk.CTk):
         self._ws_server = None
         self._closed = False
         self._poll_after_id = None
+        
+        # Efficiency optimization: async rendering + caching
+        self._efficiency_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="EfficiencyRenderer")
+        self._efficiency_cache = None
+        self._efficiency_cache_ts = 0
+        self._efficiency_cache_ttl_sec = 60.0  # Cache for 60 seconds
 
         self.title(f"{settings.APP_NAME} — Admin Panel")
         w, h = 1200, 780
@@ -1706,7 +1713,7 @@ class AdminPanel(ctk.CTk):
             control_row,
             values=["Last Month", "Last 3 Months", "Last 6 Months", "All Time"],
             variable=self._efficiency_period_var,
-            command=lambda _v: self._refresh_efficiency_overview(),
+            command=lambda _v: self._clear_efficiency_cache_and_refresh(),
             fg_color=C_BORDER,
             button_color=C_BLUE,
             button_hover_color="#2563eb",
@@ -1768,6 +1775,24 @@ class AdminPanel(ctk.CTk):
         if not self._db or not self._db.is_connected:
             return
 
+        # Check cache first (60 sec TTL)
+        now = time.time()
+        if self._efficiency_cache is not None and (now - self._efficiency_cache_ts) < self._efficiency_cache_ttl_sec:
+            self._render_efficiency_charts(self._efficiency_cache)
+            return
+
+        # Show loading indicator
+        for host in [self._eff_pie_frame, self._eff_bar_frame]:
+            for child in host.winfo_children()[1:]:
+                child.destroy()
+        ctk.CTkLabel(self._eff_pie_frame, text="Loading...", text_color=C_MUTED).pack(anchor="w", padx=10, pady=(8, 12))
+        ctk.CTkLabel(self._eff_bar_frame, text="Loading...", text_color=C_MUTED).pack(anchor="w", padx=10, pady=(8, 12))
+
+        # Submit to background thread (non-blocking)
+        self._efficiency_executor.submit(self._fetch_and_render_efficiency)
+
+    def _fetch_and_render_efficiency(self) -> None:
+        """Fetch efficiency data in background thread."""
         try:
             from C4_productivity_prediction.src.efficiency_service import EfficiencyPredictionService
         except Exception as exc:
@@ -1780,9 +1805,29 @@ class AdminPanel(ctk.CTk):
         try:
             start, end = self._efficiency_period_range()
             rows = self._efficiency_service.predict_all(self._db, period_start=start, period_end=end)
-            self._render_efficiency_charts(rows)
+            
+            # Cache results
+            self._efficiency_cache = rows
+            self._efficiency_cache_ts = time.time()
+            
+            # Render on main thread
+            self.after(0, lambda: self._render_efficiency_charts(rows))
         except Exception as exc:
             logger.warning("Efficiency overview refresh failed: %s", exc)
+            self.after(0, lambda: self._show_efficiency_error("Failed to load data"))
+    
+    def _show_efficiency_error(self, msg: str) -> None:
+        """Show error in efficiency charts."""
+        for host in [self._eff_pie_frame, self._eff_bar_frame]:
+            for child in host.winfo_children()[1:]:
+                child.destroy()
+        ctk.CTkLabel(self._eff_pie_frame, text=msg, text_color=C_RED).pack(anchor="w", padx=10, pady=(8, 12))
+        ctk.CTkLabel(self._eff_bar_frame, text=msg, text_color=C_RED).pack(anchor="w", padx=10, pady=(8, 12))
+    
+    def _clear_efficiency_cache_and_refresh(self) -> None:
+        """Clear cache and refresh when user changes period."""
+        self._efficiency_cache = None
+        self._refresh_efficiency_overview()
 
     def _render_efficiency_charts(self, rows) -> None:
         try:
