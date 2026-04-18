@@ -1580,7 +1580,6 @@ class AdminPanel(ctk.CTk):
             ("alerts",     "  Alerts"),
             ("tasks",      "  Tasks"),
             ("attendance", "  Attendance"),
-            ("settings",   "  Settings"),
         ]
         self._nav_btns: dict = {}
         for tab_id, label in nav_items:
@@ -1598,6 +1597,36 @@ class AdminPanel(ctk.CTk):
             )
             btn.pack(fill="x", padx=12, pady=2)
             self._nav_btns[tab_id] = btn
+
+        ctk.CTkButton(
+            self._sidebar,
+            text="  Behavioral Baseline Viewer",
+            height=44,
+            font=ctk.CTkFont(size=13),
+            anchor="w",
+            fg_color="transparent",
+            text_color=C_MUTED,
+            hover_color="#1a2133",
+            corner_radius=8,
+            command=self._open_baseline_window,
+        ).pack(fill="x", padx=12, pady=(8, 2))
+
+        btn = ctk.CTkButton(
+            self._sidebar,
+            text="  Settings",
+            height=44,
+            font=ctk.CTkFont(size=13),
+            anchor="w",
+            fg_color="transparent",
+            text_color=C_MUTED,
+            hover_color="#1a2133",
+            corner_radius=8,
+            command=lambda: self._switch_tab("settings"),
+        )
+        btn.pack(fill="x", padx=12, pady=2)
+        self._nav_btns["settings"] = btn
+
+        ctk.CTkFrame(self._sidebar, height=1, fg_color=C_BORDER).pack(fill="x", padx=16, pady=(20, 10))
 
         # Main content area
         self._content = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
@@ -1938,6 +1967,18 @@ class AdminPanel(ctk.CTk):
         except Exception as exc:
             logger.exception("Failed to launch efficiency window")
             messagebox.showerror("Efficiency Window", f"Failed to launch efficiency window: {exc}")
+
+    def _open_baseline_window(self) -> None:
+        script_path = _PROJECT_ROOT / "C1_user_Behavioural_Baseline" / "dashboard.py"
+        if not script_path.exists():
+            messagebox.showerror("Baseline Viewer", f"Launcher not found: {script_path}")
+            return
+
+        try:
+            subprocess.Popen([sys.executable, str(script_path)], cwd=str(_PROJECT_ROOT))
+        except Exception as exc:
+            logger.exception("Failed to launch baseline viewer")
+            messagebox.showerror("Baseline Viewer", f"Failed to launch baseline viewer: {exc}")
 
     def _refresh_live_grid(self) -> None:
         threading.Thread(target=self._fetch_live_grid, daemon=True).start()

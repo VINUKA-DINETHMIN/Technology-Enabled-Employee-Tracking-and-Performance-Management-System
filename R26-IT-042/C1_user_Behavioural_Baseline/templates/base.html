@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>$page_title</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        .layout {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            min-height: 100vh;
+        }
+        .sidebar {
+            background: #111827;
+            padding: 32px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+        .brand {
+            margin-bottom: 28px;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: #38bdf8;
+        }
+        .nav-link {
+            display: block;
+            padding: 12px 16px;
+            border-radius: 14px;
+            text-decoration: none;
+            color: #cbd5e1;
+            transition: background 0.15s ease;
+        }
+        .nav-link.active,
+        .nav-link:hover {
+            background: #1e293b;
+            color: #f8fafc;
+        }
+        .content {
+            padding: 32px 40px;
+        }
+        .page-heading {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+        .page-heading h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: -0.03em;
+        }
+        .hero {
+            margin-top: 28px;
+            padding: 24px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(14,165,233,.15), rgba(15,23,42,.95));
+            border: 1px solid rgba(148,163,184,.15);
+        }
+        .hero p {
+            margin: 0;
+            max-width: 780px;
+            color: #cfd8ff;
+            line-height: 1.7;
+        }
+        .panel {
+            margin-top: 28px;
+            padding: 24px;
+            border-radius: 24px;
+            background: #111827;
+            border: 1px solid rgba(148,163,184,.08);
+        }
+        .grid {
+            display: grid;
+            gap: 16px;
+        }
+        .table-header,
+        .row,
+        .record-row {
+            display: grid;
+            grid-template-columns: 2.5fr 1fr 1fr 1fr 1.5fr 1fr;
+            gap: 12px;
+            align-items: center;
+        }
+        .table-header {
+            padding: 16px 0;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-size: 0.78rem;
+            letter-spacing: 0.12em;
+            border-bottom: 1px solid rgba(148,163,184,.08);
+        }
+        .row,
+        .record-row {
+            padding: 18px 0;
+            border-bottom: 1px solid rgba(148,163,184,.06);
+        }
+        .cell,
+        .record-cell {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .row:last-child,
+        .record-row:last-child {
+            border-bottom: none;
+        }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 18px;
+            border-radius: 999px;
+            background: #0ea5e9;
+            color: #ffffff;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.15s ease, background 0.15s ease;
+        }
+        .button:hover {
+            background: #38bdf8;
+            transform: translateY(-1px);
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(56,189,248,.12);
+            color: #cbd5e1;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .status-chip {
+            display: inline-flex;
+            padding: 8px 14px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+        .status-chip.Stable {background: rgba(16,185,129,.16); color: #a7f3d0;}
+        .status-chip.Watch {background: rgba(250,204,21,.16); color: #fef9c3;}
+        .status-chip.Risk {background: rgba(248,113,113,.16); color: #fecaca;}
+        .metric-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            margin-top: 20px;
+        }
+        .metric-card {
+            padding: 18px;
+            border-radius: 20px;
+            background: #0f172a;
+            border: 1px solid rgba(148,163,184,.08);
+        }
+        .metric-card strong {
+            display: block;
+            margin-bottom: 10px;
+            color: #cbd5e1;
+        }
+        .metric-card span {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+        .record-row .record-cell:first-child {
+            min-width: 98px;
+        }
+        .record-row .record-cell.anomaly {
+            color: #38bdf8;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="brand">WorkPlus</div>
+            <a href="#" class="nav-link">Dashboard</a>
+            <a href="#" class="nav-link active">Behavioral Baselines</a>
+            <a href="#" class="nav-link">Attendance</a>
+            <a href="#" class="nav-link">Settings</a>
+        </aside>
+        <main class="content">
+            <div class="page-heading">
+                <div>
+                    <h1>$headline</h1>
+                    <p>$description</p>
+                </div>
+                <div class="badge">Employees: $total_employees</div>
+            </div>
+            $main_content
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<section class="panel">
+    <div class="page-heading">
+        <div>
+            <h1>Baseline details for $employee_name</h1>
+            <p>$explanation</p>
+        </div>
+        <div class="badge">$employee_id</div>
+    </div>
+    <div class="panel" style="margin-top: 24px;">
+        <div class="metric-grid">
+            <div class="metric-card">
+                <strong>Baseline status</strong>
+                <span class="status-chip $status_label">$status_label</span>
+            </div>
+            <div class="metric-card">
+                <strong>Total records</strong>
+                <span>$record_count</span>
+            </div>
+            <div class="metric-card">
+                <strong>Anomalies</strong>
+                <span>$anomaly_count</span>
+            </div>
+            <div class="metric-card">
+                <strong>Anomaly rate</strong>
+                <span>$anomaly_rate%</span>
+            </div>
+            <div class="metric-card">
+                <strong>Average login</strong>
+                <span>$average_login_time</span>
+            </div>
+            <div class="metric-card">
+                <strong>Average session</strong>
+                <span>$average_session</span>
+            </div>
+            <div class="metric-card">
+                <strong>Average idle</strong>
+                <span>$average_idle</span>
+            </div>
+            <div class="metric-card">
+                <strong>Average auth failures</strong>
+                <span>$average_auth_failures</span>
+            </div>
+            <div class="metric-card">
+                <strong>Average activity</strong>
+                <span>$average_activity</span>
+            </div>
+            <div class="metric-card">
+                <strong>Primary module</strong>
+                <span>$top_module</span>
+            </div>
+        </div>
+    </div>
+    <div class="panel" style="margin-top: 24px;">
+        <h2>Recent behavior records</h2>
+        <div class="table-header" style="margin-top: 16px;">
+            <div class="record-cell">Date</div>
+            <div class="record-cell">Sign-in</div>
+            <div class="record-cell">Sign-out</div>
+            <div class="record-cell">Module</div>
+            <div class="record-cell">Anomaly</div>
+            <div class="record-cell">Type</div>
+        </div>
+        $recent_record_rows
+    </div>
+    <div style="margin-top: 24px;">
+        <a class="button" href="/">Back to baseline list</a>
+    </div>
+</section>
