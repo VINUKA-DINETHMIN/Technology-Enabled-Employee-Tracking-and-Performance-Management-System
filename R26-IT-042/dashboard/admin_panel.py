@@ -1600,7 +1600,7 @@ class AdminPanel(ctk.CTk):
 
         ctk.CTkButton(
             self._sidebar,
-            text="Behavioral Baseline Viewer",
+            text="  Behavioral Baseline Viewer",
             height=44,
             font=ctk.CTkFont(size=13),
             anchor="w",
