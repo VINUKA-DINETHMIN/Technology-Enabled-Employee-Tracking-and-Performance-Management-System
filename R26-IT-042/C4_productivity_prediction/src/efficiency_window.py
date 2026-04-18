@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
+from tkinter import messagebox
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -140,6 +141,7 @@ class EfficiencyWindow(ctk.CTk):
             ("Pending", 80),
             ("On Time", 90),
             ("Late", 80),
+            ("Details", 90),
         ]:
             ctk.CTkLabel(
                 header_row,
@@ -276,6 +278,144 @@ class EfficiencyWindow(ctk.CTk):
                     text_color=color,
                     font=ctk.CTkFont(size=12),
                 ).pack(side="left", padx=4, pady=8)
+
+            ctk.CTkButton(
+                row,
+                text="Details",
+                width=86,
+                height=28,
+                fg_color=C_BLUE,
+                hover_color="#2563eb",
+                command=lambda emp_id=r.employee_id: self._open_employee_details(emp_id),
+            ).pack(side="left", padx=4, pady=6)
+
+    def _open_employee_details(self, employee_id: str) -> None:
+        self._status_var.set(f"Loading productivity report for {employee_id}...")
+        period_start, period_end = self._period_range()
+        self._executor.submit(self._fetch_employee_report, employee_id, period_start, period_end)
+
+    def _fetch_employee_report(self, employee_id: str, period_start, period_end) -> None:
+        try:
+            report = self._service.get_employee_productivity_report(
+                self._db,
+                employee_id=employee_id,
+                period_start=period_start,
+                period_end=period_end,
+            )
+            self.after(0, lambda: self._show_employee_details(report, employee_id))
+        except Exception as exc:
+            logger.exception("Failed to build employee productivity report")
+            self.after(0, lambda: messagebox.showerror("Productivity Report", f"Failed to load report: {exc}"))
+
+    def _show_employee_details(self, report, employee_id: str) -> None:
+        if report is None:
+            self._status_var.set("No report available for selected employee.")
+            messagebox.showinfo("Productivity Report", f"No report data available for {employee_id} in this period.")
+            return
+
+        pred_color = {
+            "high": C_GREEN,
+            "medium": C_AMBER,
+            "low": C_RED,
+        }.get(str(report.predicted_label).lower(), C_TEXT)
+
+        self._status_var.set(f"Report ready for {report.employee_id}.")
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"Productivity Detail Report - {report.full_name}")
+        win.geometry("860x620")
+        win.minsize(760, 520)
+        win.configure(fg_color=C_BG)
+        win.transient(self)
+        win.grab_set()
+
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 8))
+
+        ctk.CTkLabel(
+            header,
+            text=f"{report.full_name} ({report.employee_id})",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            header,
+            text=report.summary,
+            font=ctk.CTkFont(size=12),
+            text_color=C_MUTED,
+        ).pack(anchor="w", pady=(2, 0))
+
+        cards = ctk.CTkFrame(win, fg_color="transparent")
+        cards.pack(fill="x", padx=16, pady=(0, 8))
+
+        metric_cards = [
+            ("Prediction", str(report.predicted_label), pred_color),
+            ("Confidence", f"{report.confidence * 100:.1f}%", C_TEAL),
+            ("Prod. Score", f"{report.productivity_score:.1f}", C_BLUE),
+            ("Workload", f"{report.workload_score:.1f}", C_AMBER),
+        ]
+
+        for col, (title, value, color) in enumerate(metric_cards):
+            card = ctk.CTkFrame(cards, fg_color=C_CARD, corner_radius=10, border_width=1, border_color=C_BORDER)
+            card.grid(row=0, column=col, sticky="nsew", padx=4)
+            cards.grid_columnconfigure(col, weight=1)
+            ctk.CTkLabel(card, text=title, text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10, pady=(8, 1))
+            ctk.CTkLabel(card, text=value, text_color=color, font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 9))
+
+        content = ctk.CTkScrollableFrame(win, fg_color=C_CARD, corner_radius=12)
+        content.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+        ctk.CTkLabel(
+            content,
+            text="Productivity Detail Report",
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        stats = [
+            f"Assigned Tasks: {report.total_tasks_assigned}",
+            f"Pending Tasks: {report.total_tasks_pending}",
+            f"Completed On Time: {report.total_tasks_completed_on_time}",
+            f"Completed Late: {report.total_tasks_completed_late}",
+            f"Completion Ratio: {report.completion_ratio * 100:.1f}%",
+            f"On-Time Ratio: {report.on_time_ratio * 100:.1f}%",
+            f"Backlog Ratio: {report.backlog_ratio * 100:.1f}%",
+        ]
+
+        for line in stats:
+            ctk.CTkLabel(
+                content,
+                text=line,
+                text_color=C_TEXT,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", padx=12, pady=2)
+
+        ctk.CTkLabel(
+            content,
+            text="Model Insights",
+            text_color=C_TEXT,
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        for insight in report.insights:
+            ctk.CTkLabel(
+                content,
+                text=f"- {insight}",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=12),
+                justify="left",
+                wraplength=780,
+            ).pack(anchor="w", padx=12, pady=2)
+
+        ctk.CTkButton(
+            win,
+            text="Close",
+            fg_color=C_BORDER,
+            hover_color="#27364f",
+            width=110,
+            command=win.destroy,
+        ).pack(anchor="e", padx=16, pady=(0, 14))
 
 
 def launch_efficiency_window(db: MongoDBClient | None = None) -> None:

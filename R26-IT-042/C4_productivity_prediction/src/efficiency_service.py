@@ -28,6 +28,25 @@ class EmployeeEfficiencyResult:
     total_tasks_completed_late: int
 
 
+@dataclass
+class EmployeeProductivityReport:
+    employee_id: str
+    full_name: str
+    predicted_label: str
+    confidence: float
+    productivity_score: float
+    workload_score: float
+    total_tasks_assigned: int
+    total_tasks_pending: int
+    total_tasks_completed_on_time: int
+    total_tasks_completed_late: int
+    completion_ratio: float
+    on_time_ratio: float
+    backlog_ratio: float
+    summary: str
+    insights: list[str]
+
+
 class EfficiencyPredictionService:
     """Read-only C4 prediction service built on top of existing MongoDB data."""
 
@@ -160,6 +179,91 @@ class EfficiencyPredictionService:
         final_results = sorted(results, key=lambda r: (r.predicted_label, -r.confidence, r.employee_id))
         self._store_cached_results(cache_key, final_results)
         return final_results
+
+    def get_employee_productivity_report(
+        self,
+        db_client,
+        employee_id: str,
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+    ) -> Optional[EmployeeProductivityReport]:
+        target_id = self._normalize_employee_id(employee_id)
+        if not target_id:
+            return None
+
+        rows = self.predict_all(db_client, period_start=period_start, period_end=period_end)
+        target = None
+        for row in rows:
+            if self._normalize_employee_id(row.employee_id) == target_id:
+                target = row
+                break
+
+        if target is None:
+            return None
+
+        assigned = int(target.total_tasks_assigned)
+        pending = int(target.total_tasks_pending)
+        on_time = int(target.total_tasks_completed_on_time)
+        late = int(target.total_tasks_completed_late)
+        completed = on_time + late
+
+        completion_ratio = (completed / assigned) if assigned else 0.0
+        on_time_ratio = (on_time / completed) if completed else 0.0
+        backlog_ratio = (pending / assigned) if assigned else 0.0
+
+        confidence_pct = target.confidence * 100.0
+        summary = (
+            f"Predicted productivity is {target.predicted_label} "
+            f"with {confidence_pct:.1f}% confidence."
+        )
+
+        insights: list[str] = []
+        if assigned == 0:
+            insights.append("No tasks were assigned in this period, so task-based metrics are limited.")
+        if backlog_ratio >= 0.5:
+            insights.append("Backlog is high compared to assigned tasks, which lowers workload performance.")
+        elif backlog_ratio <= 0.2 and assigned > 0:
+            insights.append("Pending task ratio is low, indicating good task flow.")
+
+        if completed > 0:
+            if on_time_ratio >= 0.8:
+                insights.append("Completed tasks are mostly delivered on time.")
+            elif on_time_ratio < 0.5:
+                insights.append("On-time completion rate is low and likely affecting productivity output.")
+
+        if target.productivity_score_input >= 70:
+            insights.append("Observed productivity score is strong for this period.")
+        elif target.productivity_score_input < 40:
+            insights.append("Observed productivity score is low and needs attention.")
+
+        if target.workload_score < 40:
+            insights.append("Workload score is low due to limited completion or high pending tasks.")
+        elif target.workload_score >= 70:
+            insights.append("Workload score is healthy and indicates stable execution.")
+
+        if confidence_pct < 60:
+            insights.append("Prediction confidence is moderate; monitor additional periods for stability.")
+
+        if not insights:
+            insights.append("Productivity signals are stable for this period.")
+
+        return EmployeeProductivityReport(
+            employee_id=target.employee_id,
+            full_name=target.full_name,
+            predicted_label=target.predicted_label,
+            confidence=target.confidence,
+            productivity_score=target.productivity_score_input,
+            workload_score=target.workload_score,
+            total_tasks_assigned=assigned,
+            total_tasks_pending=pending,
+            total_tasks_completed_on_time=on_time,
+            total_tasks_completed_late=late,
+            completion_ratio=completion_ratio,
+            on_time_ratio=on_time_ratio,
+            backlog_ratio=backlog_ratio,
+            summary=summary,
+            insights=insights,
+        )
 
     def _build_feature_row(self, emp: dict, tasks: list[dict], activity_logs: list[dict]) -> tuple[dict, dict]:
         now = datetime.now(timezone.utc)
