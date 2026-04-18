@@ -28,6 +28,8 @@ _SCALER_PATH = _MODELS_DIR / "feature_scaler.pkl"
 _AE_MODEL_PATH = _MODELS_DIR / "ae_model.pkl"
 _AE_SCALER_PATH = _MODELS_DIR / "ae_scaler.pkl"
 _AE_THRESHOLD_PATH = _MODELS_DIR / "ae_threshold.pkl"
+_COMPOSITE_ISO_PATH = _MODELS_DIR / "composite_iso.pkl"
+_META_LR_PATH = _MODELS_DIR / "meta_lr.pkl"
 _ENSEMBLE_CONFIG_PATH = _MODELS_DIR / "ensemble_config.json"
 
 _IF_WEIGHT = 0.6
@@ -74,6 +76,8 @@ class AnomalyEngine:
         self._ae_model = None
         self._ae_scaler = None
         self._ae_threshold = None
+        self._composite_iso = None
+        self._meta_lr = None
         self._if_weight = _IF_WEIGHT
         self._ae_weight = _AE_WEIGHT
         self._ensemble_threshold = None
@@ -121,6 +125,8 @@ class AnomalyEngine:
         self._ae_model = None
         self._ae_scaler = None
         self._ae_threshold = None
+        self._composite_iso = None
+        self._meta_lr = None
         self._model_loaded = False
         self._last_load_error = None
 
@@ -189,6 +195,24 @@ class AnomalyEngine:
             except Exception as exc:
                 logger.warning("Could not load ensemble config: %s", exc)
 
+        if _COMPOSITE_ISO_PATH.exists():
+            try:
+                with open(_COMPOSITE_ISO_PATH, "rb") as f:
+                    self._composite_iso = pickle.load(f)
+                logger.info("Composite isotonic calibrator loaded from %s", _COMPOSITE_ISO_PATH)
+            except Exception as exc:
+                logger.warning("Could not load composite calibrator (%s): %s", _COMPOSITE_ISO_PATH, exc)
+                self._composite_iso = None
+
+        if _META_LR_PATH.exists():
+            try:
+                with open(_META_LR_PATH, "rb") as f:
+                    self._meta_lr = pickle.load(f)
+                logger.info("Meta logistic calibrator loaded from %s", _META_LR_PATH)
+            except Exception as exc:
+                logger.warning("Could not load meta calibrator (%s): %s", _META_LR_PATH, exc)
+                self._meta_lr = None
+
         self._model_loaded = True
         self._last_load_error = None
         return True
@@ -250,10 +274,41 @@ class AnomalyEngine:
                     ae_risk = max(0.0, min(100.0, mae * 100.0))
 
             if ae_risk is None:
-                return round(if_risk, 2)
+                base_risk = if_risk
+            else:
+                base_risk = (self._if_weight * if_risk) + (self._ae_weight * ae_risk)
 
-            risk = (self._if_weight * if_risk) + (self._ae_weight * ae_risk)
-            return round(max(0.0, min(100.0, risk)), 2)
+            base_risk = max(0.0, min(100.0, base_risk))
+
+            calibrated_risk = None
+            if self._meta_lr is not None:
+                try:
+                    meta_input = np.array([
+                        [
+                            max(0.0, min(1.0, if_risk / 100.0)),
+                            max(0.0, min(1.0, (ae_risk if ae_risk is not None else if_risk) / 100.0)),
+                        ]
+                    ], dtype=np.float64)
+                    meta_prob = float(self._meta_lr.predict_proba(meta_input)[0, 1])
+                    if np.isfinite(meta_prob):
+                        calibrated_risk = max(0.0, min(100.0, meta_prob * 100.0))
+                except Exception as exc:
+                    logger.debug("Meta calibration skipped: %s", exc)
+
+            if calibrated_risk is None and self._composite_iso is not None:
+                try:
+                    iso_input = np.array([base_risk / 100.0], dtype=np.float64)
+                    iso_out = self._composite_iso.predict(iso_input)
+                    iso_val = float(np.asarray(iso_out).reshape(-1)[0])
+                    if np.isfinite(iso_val):
+                        calibrated_risk = max(0.0, min(100.0, iso_val * 100.0 if iso_val <= 1.5 else iso_val))
+                except Exception as exc:
+                    logger.debug("Composite calibration skipped: %s", exc)
+
+            if calibrated_risk is not None:
+                return round(calibrated_risk, 2)
+
+            return round(base_risk, 2)
 
         except Exception as exc:
             logger.error("Anomaly scoring error: %s", exc)
