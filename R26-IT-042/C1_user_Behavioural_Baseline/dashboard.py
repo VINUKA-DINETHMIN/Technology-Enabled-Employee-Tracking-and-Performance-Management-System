@@ -24,6 +24,15 @@ C_TEXT = "#e2e8f0"
 C_MUTED = "#94a3b8"
 C_BLUE = "#3b82f6"
 
+LIST_COLUMNS = [
+    ("Employee", 160, 5),
+    ("ID", 72, 2),
+    ("Anomaly", 82, 2),
+    ("Top Location", 96, 3),
+    ("Status", 72, 2),
+    ("", 86, 2),
+]
+
 
 def safe_int(value, default=0):
     try:
@@ -375,22 +384,40 @@ class BehavioralBaselineApp(ctk.CTk):
             return
 
         header = ctk.CTkFrame(self._list_scroll, fg_color=C_BORDER, corner_radius=12)
-        header.pack(fill="x", pady=(0, 4))
-        for text, width in [("Employee", 220), ("ID", 90), ("Anomaly", 89), ("Top Location", 160), ("Status", 90), ("", 80)]:
-            ctk.CTkLabel(header, text=text, width=width, anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=6, pady=10)
+        header.pack(fill="x", pady=(0, 4), padx=(0, 8))
+        for col_idx, (text, minsize, weight) in enumerate(LIST_COLUMNS):
+            header.grid_columnconfigure(col_idx, weight=weight, minsize=minsize)
+            ctk.CTkLabel(
+                header,
+                text=text,
+                anchor="w",
+                text_color=C_MUTED,
+                font=ctk.CTkFont(size=11, weight="bold"),
+            ).grid(row=0, column=col_idx, sticky="w", padx=(8, 4), pady=10)
 
         for employee_id, baseline in sorted(self.baselines.items(), key=lambda x: x[1]["employee_name"]):
             row = ctk.CTkFrame(self._list_scroll, fg_color=C_CARD, corner_radius=12)
-            row.pack(fill="x", pady=4, ipady=4)
+            row.pack(fill="x", pady=4, ipady=4, padx=(0, 8))
             row.bind("<Button-1>", lambda e, eid=employee_id: self.show_employee_detail(eid))
 
-            ctk.CTkLabel(row, text=baseline["employee_name"], width=220, anchor="w", text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=6)
-            ctk.CTkLabel(row, text=employee_id, width=90, anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
-            ctk.CTkLabel(row, text=f"{baseline['anomaly_rate']:.1f}%", width=89, anchor="w", text_color=C_AMBER if baseline["anomaly_rate"] >= 15 else C_GREEN, font=ctk.CTkFont(size=11)).pack(side="left")
-            ctk.CTkLabel(row, text=baseline["top_module"], width=160, anchor="w", text_color=C_TEXT, font=ctk.CTkFont(size=11)).pack(side="left")
+            for col_idx, (_, minsize, weight) in enumerate(LIST_COLUMNS):
+                row.grid_columnconfigure(col_idx, weight=weight, minsize=minsize)
+
+            ctk.CTkLabel(row, text=baseline["employee_name"], anchor="w", text_color=C_TEXT, font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, sticky="w", padx=(8, 4), pady=8)
+            ctk.CTkLabel(row, text=employee_id, anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11)).grid(row=0, column=1, sticky="w", padx=(8, 4), pady=8)
+            ctk.CTkLabel(row, text=f"{baseline['anomaly_rate']:.1f}%", anchor="w", text_color=C_AMBER if baseline["anomaly_rate"] >= 15 else C_GREEN, font=ctk.CTkFont(size=11)).grid(row=0, column=2, sticky="w", padx=(8, 4), pady=8)
+            ctk.CTkLabel(row, text=baseline["top_module"], anchor="w", text_color=C_TEXT, font=ctk.CTkFont(size=11)).grid(row=0, column=3, sticky="w", padx=(8, 4), pady=8)
             status_color = C_GREEN if baseline["status_label"] == "Stable" else C_AMBER if baseline["status_label"] == "Watch" else C_RED
-            ctk.CTkLabel(row, text=baseline["status_label"], width=90, anchor="w", text_color=status_color, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left")
-            ctk.CTkButton(row, text="Details", width=78, height=28, fg_color=C_BLUE, hover_color="#2563eb", command=lambda eid=employee_id: self.show_employee_detail(eid)).pack(side="right", padx=8)
+            ctk.CTkLabel(row, text=baseline["status_label"], anchor="w", text_color=status_color, font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=4, sticky="w", padx=(8, 4), pady=8)
+            ctk.CTkButton(
+                row,
+                text="Details",
+                width=80,
+                height=28,
+                fg_color=C_BLUE,
+                hover_color="#2563eb",
+                command=lambda eid=employee_id: self.show_employee_detail(eid),
+            ).grid(row=0, column=5, sticky="e", padx=(8, 6), pady=6)
 
             self._row_frames[employee_id] = row
 
