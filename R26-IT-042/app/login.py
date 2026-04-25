@@ -160,6 +160,7 @@ class LoginWindow(ctk.CTk):
         self._pw_attempts = 0
         self._mfa_attempts = 0
         self._face_attempts = 0
+        self._mfa_in_progress = False
 
         self.title(f"{settings.APP_NAME} — Login")
         self.geometry("480x680")
@@ -214,9 +215,21 @@ class LoginWindow(ctk.CTk):
         self._show_step_1()
 
     def _clear_step(self) -> None:
+        # Always clear step-local key handlers before replacing widgets.
+        self.unbind("<Return>")
+        self._mfa_in_progress = False
         for w in self._step_container.winfo_children():
             w.destroy()
         self._status_var.set("")
+
+    @staticmethod
+    def _widget_exists(widget) -> bool:
+        if widget is None:
+            return False
+        try:
+            return bool(int(widget.winfo_exists()))
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Step 1 — Password
@@ -341,6 +354,7 @@ class LoginWindow(ctk.CTk):
         self._step = 1
         self._clear_step()
         self._indicator.set_step(1)
+        self._mfa_in_progress = False
 
         ctk.CTkLabel(self._step_container, text="Two-Factor Authentication",
                      font=ctk.CTkFont(size=15, weight="bold"), text_color=C_TEXT).pack(padx=24, pady=(20, 4), anchor="w")
@@ -377,11 +391,25 @@ class LoginWindow(ctk.CTk):
             self.after(200, self._on_step2_submit)
 
     def _on_step2_submit(self) -> None:
+        # Ignore stale callbacks when step has changed or MFA widgets are gone.
+        if self._step != 1:
+            return
+        if self._mfa_in_progress:
+            return
+        if not self._widget_exists(getattr(self, "_mfa_btn", None)):
+            return
+
         code = self._otp_var.get().strip()
         if len(code) != 6 or not code.isdigit():
             self._set_status("Enter a valid 6-digit code.")
             return
-        self._mfa_btn.configure(state="disabled", text="Verifying…")
+
+        self._mfa_in_progress = True
+        try:
+            self._mfa_btn.configure(state="disabled", text="Verifying…")
+        except Exception:
+            self._mfa_in_progress = False
+            return
         threading.Thread(target=self._verify_mfa, args=(code,), daemon=True).start()
 
     def _verify_mfa(self, code: str) -> None:
@@ -401,15 +429,28 @@ class LoginWindow(ctk.CTk):
             else:
                 self._mfa_attempts += 1
                 if self._mfa_attempts >= _MAX_ATTEMPTS:
+                    self._mfa_in_progress = False
                     self.after(0, lambda: self._set_status("Too many invalid codes. Please restart login."))
                     self.after(2000, self._show_step_1)
                 else:
+                    self._mfa_in_progress = False
                     self.after(0, lambda a=self._mfa_attempts: self._set_status(f"Invalid code. ({a}/{_MAX_ATTEMPTS})"))
-                    self.after(0, lambda: self._mfa_btn.configure(state="normal", text="Verify Code"))
+                    self.after(0, self._restore_mfa_button)
         except Exception as exc:
             logger.error("MFA verify error: %s", exc)
+            self._mfa_in_progress = False
             self.after(0, lambda: self._set_status("MFA verification error."))
-            self.after(0, lambda: self._mfa_btn.configure(state="normal", text="Verify Code"))
+            self.after(0, self._restore_mfa_button)
+
+    def _restore_mfa_button(self) -> None:
+        if self._step != 1:
+            return
+        if not self._widget_exists(getattr(self, "_mfa_btn", None)):
+            return
+        try:
+            self._mfa_btn.configure(state="normal", text="Verify Code")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Step 3 — Face Verification + Liveness
