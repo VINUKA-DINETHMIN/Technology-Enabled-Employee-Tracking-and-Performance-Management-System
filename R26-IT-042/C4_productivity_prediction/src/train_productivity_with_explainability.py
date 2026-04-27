@@ -147,32 +147,6 @@ def main() -> None:
     plt.savefig(output_dir / "shap_summary.png", dpi=150)
     plt.close()
 
-    # LIME explanation for one prediction.
-    class_names = list(y_encoder.classes_)
-    lime_explainer = LimeTabularExplainer(
-        training_data=X_train_trans,
-        feature_names=list(feature_names),
-        class_names=class_names,
-        mode="classification",
-        discretize_continuous=True,
-    )
-
-    sample_index = 0
-    sample = X_test_trans[sample_index]
-
-    exp = lime_explainer.explain_instance(
-        data_row=sample,
-        predict_fn=rf.predict_proba,
-        num_features=15,
-        top_labels=1,
-    )
-
-    exp.save_to_file(str(output_dir / "lime_explanation_sample.html"))
-
-    print("Training complete.")
-    print(f"Saved model and reports in: {output_dir}")
-    print(f"Class labels: {class_names}")
-
 
 if __name__ == "__main__":
     main()
