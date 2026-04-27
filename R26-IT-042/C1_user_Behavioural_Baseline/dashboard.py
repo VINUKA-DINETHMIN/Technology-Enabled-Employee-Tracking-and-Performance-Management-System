@@ -411,7 +411,7 @@ class BehavioralBaselineApp(ctk.CTk):
             except Exception:
                 pass
 
-    def _render_detail_panel(self, baseline):
+    
         for child in self._detail_frame.winfo_children():
             child.destroy()
 
