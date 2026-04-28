@@ -291,7 +291,7 @@ class BehavioralBaselineApp(ctk.CTk):
             first_id = next(iter(sorted(self.baselines.keys(), key=lambda eid: self.baselines[eid]["employee_name"])))
             self.show_employee_detail(first_id)
 
-    
+    def _build_layout(self):
         header = ctk.CTkFrame(self, fg_color=C_CARD, corner_radius=0, height=68)
         header.pack(fill="x", padx=16, pady=(16, 0))
         header.pack_propagate(False)
