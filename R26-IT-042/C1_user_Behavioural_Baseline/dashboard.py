@@ -37,9 +37,18 @@ def safe_float(value, default=0.0):
         return float(value)
     except (ValueError, TypeError):
         return default
+    
 
-
-
+# functions for formatting durations and login times
+def format_duration(minutes):
+    minutes = int(round(minutes))
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours and mins:
+        return f"{hours}h {mins}m"
+    if hours:
+        return f"{hours}h"
+    return f"{mins}m"
 
 
 def format_login_time(value):
