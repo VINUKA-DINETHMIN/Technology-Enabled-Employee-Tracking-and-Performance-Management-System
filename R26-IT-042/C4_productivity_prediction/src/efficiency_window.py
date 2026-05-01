@@ -63,7 +63,7 @@ class EfficiencyWindow(ctk.CTk):
         # Schedule initial refresh after 200 ms (startup delay)
         self.after(200, self._refresh)
 
-    def _build(self) -> None:
+    
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=18, pady=(16, 8))
 
