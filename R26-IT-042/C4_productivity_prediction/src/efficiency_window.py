@@ -209,7 +209,20 @@ class EfficiencyWindow(ctk.CTk):
         self._last_updated_var.set(f"Last updated: {now}")
         self._status_var.set(f"Read-only prediction completed for {len(rows)} employees.")
 
-    
+    #rendering summary in static form
+    def _render_summary(self, rows) -> None:
+        total = len(rows)
+        high = sum(1 for r in rows if r.predicted_label.lower() == "high")
+        medium = sum(1 for r in rows if r.predicted_label.lower() == "medium")
+        low = sum(1 for r in rows if r.predicted_label.lower() == "low")
+        avg_conf = (sum(r.confidence for r in rows) / total) if total else 0.0
+
+        self._set_card("employees", str(total))
+        self._set_card("high", str(high))
+        self._set_card("medium", str(medium))
+        self._set_card("low", str(low))
+        self._set_card("avg_conf", f"{avg_conf * 100:.1f}%")
+
     def _period_range(self):
         choice = self._period_var.get().strip().lower()
         now = datetime.now(timezone.utc)
