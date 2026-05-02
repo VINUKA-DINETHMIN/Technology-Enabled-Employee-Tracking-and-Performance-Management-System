@@ -193,7 +193,8 @@ def load_records_from_mongo():
         client.close()
 
 
-
+# Load records from MongoDB if available, otherwise fall back to CSV file
+def load_records():
     records = load_records_from_mongo()
     if records:
         return records
