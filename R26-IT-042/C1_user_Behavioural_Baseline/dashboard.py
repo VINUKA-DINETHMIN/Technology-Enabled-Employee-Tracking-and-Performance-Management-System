@@ -223,54 +223,7 @@ def load_records():
     return records
 
 
-def build_employee_baselines(records):
-    by_employee = defaultdict(list)
-    for record in records:
-        if not record["employee_id"]:
-            continue
-        by_employee[record["employee_id"]].append(record)
 
-    baselines = {}
-    for employee_id, rows in by_employee.items():
-        employee_name = rows[0]["employee_name"] or employee_id
-        total = len(rows)
-        anomaly_count = sum(r.get("is_anomaly", 0) for r in rows)
-        average_login_hour = sum(r.get("login_hour_numeric", 0.0) for r in rows) / total
-        average_productivity = sum(r.get("productivity_score", 0.0) for r in rows) / total
-        average_risk = sum(r.get("composite_risk_score", 0.0) for r in rows) / total
-        alert_count = sum(r.get("alert_count", 0) for r in rows)
-        break_count = sum(r.get("break_count", 0) for r in rows)
-        task_count = rows[0].get("task_count", 0)
-        attendance_status = rows[0].get("attendance_status", "Unknown")
-        common_location = Counter(r.get("location_mode", "unknown") for r in rows if r.get("location_mode"))
-        top_location = common_location.most_common(1)[0][0] if common_location else "Unknown"
-        anomaly_rate = round(anomaly_count * 100.0 / total, 1)
-        recent_records = sorted(rows, key=lambda r: r.get("last_seen", ""), reverse=True)[:5]
-        status_label = "Stable" if anomaly_rate < 10 else "Watch" if anomaly_rate < 25 else "Risk"
-
-        baselines[employee_id] = {
-            "employee_id": employee_id,
-            "employee_name": employee_name,
-            "record_count": total,
-            "alert_count": alert_count,
-            "break_count": break_count,
-            "task_count": task_count,
-            "attendance_status": attendance_status,
-            "anomaly_count": anomaly_count,
-            "anomaly_rate": anomaly_rate,
-            "average_login_time": format_login_time(average_login_hour),
-            "average_productivity": round(average_productivity, 1),
-            "average_risk": round(average_risk, 1),
-            "top_module": top_location,
-            "status_label": status_label,
-            "recent_records": recent_records,
-            "explanation": (
-                f"{employee_name} ({employee_id}) has {total} recorded activity events, "
-                f"with average productivity {round(average_productivity, 1)}% and average risk {round(average_risk, 1)}%. "
-                f"Alerts have occurred {alert_count} times, and the most common location mode is {top_location}."
-            ),
-        }
-    return baselines
 
 
 class BehavioralBaselineApp(ctk.CTk):
