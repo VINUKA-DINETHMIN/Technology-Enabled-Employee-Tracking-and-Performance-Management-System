@@ -1734,7 +1734,32 @@ class AdminPanel(ctk.CTk):
         control_row = ctk.CTkFrame(charts_card, fg_color="transparent")
         control_row.pack(fill="x", padx=16, pady=(14, 6))
 
-        
+        ctk.CTkLabel(
+            control_row,
+            text="Overall Efficiency Overview",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C_TEXT,
+        ).pack(side="left")
+
+        ctk.CTkOptionMenu(
+            control_row,
+            values=["Last Month", "Last 3 Months", "Last 6 Months", "All Time"],
+            variable=self._efficiency_period_var,
+            command=lambda _v: self._clear_efficiency_cache_and_refresh(),
+            fg_color=C_BORDER,
+            button_color=C_BLUE,
+            button_hover_color="#2563eb",
+            width=170,
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            control_row,
+            text="Refresh Charts",
+            fg_color=C_TEAL,
+            hover_color=C_TEAL_D,
+            width=120,
+            command=self._refresh_efficiency_overview,
+        ).pack(side="right")
 
         charts_row = ctk.CTkFrame(charts_card, fg_color="transparent")
         charts_row.pack(fill="both", expand=True, padx=16, pady=(4, 12))
