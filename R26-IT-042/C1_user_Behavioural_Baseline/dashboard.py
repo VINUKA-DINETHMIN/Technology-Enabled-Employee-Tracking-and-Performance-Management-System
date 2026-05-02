@@ -193,7 +193,7 @@ def load_records_from_mongo():
         client.close()
 
 
-def load_records():
+
     records = load_records_from_mongo()
     if records:
         return records
