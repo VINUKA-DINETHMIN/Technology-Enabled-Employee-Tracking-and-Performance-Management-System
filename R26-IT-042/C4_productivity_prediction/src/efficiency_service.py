@@ -417,9 +417,25 @@ class EfficiencyPredictionService:
 
         return ordered, stats
 
+    # Helper methods for data parsing, normalization, caching, and feature extraction.
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            if value in (None, ""):
+                return default
+            return float(value)
+        except Exception:
+            return default
 
-
-
+    # For categorical features, use the most common value or a default if no data is available.
+    @staticmethod
+    def _mode_or_default(values: list[str], default: str) -> str:
+        if not values:
+            return default
+        counts: dict[str, int] = {}
+        for v in values:
+            counts[v] = counts.get(v, 0) + 1
+        return sorted(counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
 
     @staticmethod
     def _normalize_employee_id(value: str) -> str:
