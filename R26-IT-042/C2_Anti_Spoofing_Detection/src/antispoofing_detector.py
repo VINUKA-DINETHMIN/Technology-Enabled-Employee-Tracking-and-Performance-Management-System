@@ -24,6 +24,7 @@ _MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 _MODEL_PATH = _MODELS_DIR / "best_anti_spoofing_model.keras"
 
 # Anti-spoofing thresholds
+# These values control how strictly the model decides real vs fake.
 _REAL_THRESHOLD = 0.5  # Score >= 0.5 = Real, < 0.5 = Fake
 _CONFIDENCE_THRESHOLD = 0.85  # Require >= 85% confidence for decision
 
