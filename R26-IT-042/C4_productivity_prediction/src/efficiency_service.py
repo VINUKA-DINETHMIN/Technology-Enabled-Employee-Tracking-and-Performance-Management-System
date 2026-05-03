@@ -417,14 +417,7 @@ class EfficiencyPredictionService:
 
         return ordered, stats
 
-    @staticmethod
-    def _to_float(value, default: float = 0.0) -> float:
-        try:
-            if value in (None, ""):
-                return default
-            return float(value)
-        except Exception:
-            return default
+
 
     @staticmethod
     def _mode_or_default(values: list[str], default: str) -> str:
