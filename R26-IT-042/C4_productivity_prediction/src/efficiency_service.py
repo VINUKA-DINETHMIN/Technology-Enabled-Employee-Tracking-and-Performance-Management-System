@@ -63,6 +63,7 @@ class EfficiencyPredictionService:
         self._feature_names: list[str] = []
 
     def load(self) -> None:
+        # Load the trained model and label encoder, then capture the model's expected feature order.
         self._model = joblib.load(self._model_path)
         self._label_encoder = joblib.load(self._label_encoder_path)
         names = getattr(self._model, "feature_names_in_", None)
@@ -71,6 +72,7 @@ class EfficiencyPredictionService:
         self._feature_names = [str(n) for n in names]
 
     def predict_all(self, db_client, period_start: Optional[datetime] = None, period_end: Optional[datetime] = None) -> list[EmployeeEfficiencyResult]:
+        # Build one feature row per employee, run the classifier, and return ranked prediction results.
         if self._model is None or self._label_encoder is None:
             self.load()
 
@@ -187,6 +189,7 @@ class EfficiencyPredictionService:
         period_start: Optional[datetime] = None,
         period_end: Optional[datetime] = None,
     ) -> Optional[EmployeeProductivityReport]:
+        # Convert the raw prediction into a readable employee-level productivity summary.
         target_id = self._normalize_employee_id(employee_id)
         if not target_id:
             return None
@@ -266,6 +269,7 @@ class EfficiencyPredictionService:
         )
 
     def _build_feature_row(self, emp: dict, tasks: list[dict], activity_logs: list[dict]) -> tuple[dict, dict]:
+        # Assemble model-ready inputs and the reporting metadata from employee, task, and activity data.
         now = datetime.now(timezone.utc)
         employee_id = str(emp.get("employee_id") or "UNKNOWN")
         full_name = str(emp.get("full_name") or employee_id)

@@ -37,9 +37,11 @@ C_BLUE = "#3b82f6"
 
 class EfficiencyWindow(ctk.CTk):
     """Standalone read-only window for per-employee efficiency prediction."""
+    
 
     def __init__(self, db: MongoDBClient, refresh_ms: int = 60_000) -> None:
         super().__init__()
+         # Database client instance
         self._db = db
         self._refresh_ms = refresh_ms
         self._service = EfficiencyPredictionService()
@@ -58,6 +60,7 @@ class EfficiencyWindow(ctk.CTk):
         self._status_var = ctk.StringVar(value="Loading model and reading data...")
 
         self._build()
+        # Schedule initial refresh after 200 ms (startup delay)
         self.after(200, self._refresh)
 
     def _build(self) -> None:
