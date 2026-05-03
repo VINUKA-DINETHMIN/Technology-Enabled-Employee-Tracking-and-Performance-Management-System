@@ -399,7 +399,22 @@ class BehavioralBaselineApp(ctk.CTk):
 
         self._update_row_selection()
 
-    
+
+    # When an employee is selected, show detailed baseline information in the right panel
+    def show_employee_detail(self, employee_id: str):
+        if employee_id not in self.baselines:
+            return
+        self.selected_employee_id = employee_id
+        self._update_row_selection()
+        self._render_detail_panel(self.baselines[employee_id])
+
+    def _update_row_selection(self):
+        for eid, frame in self._row_frames.items():
+            bg = "#1f2937" if eid == self.selected_employee_id else C_CARD
+            try:
+                frame.configure(fg_color=bg)
+            except Exception:
+                pass
 
     def _render_detail_panel(self, baseline):
         for child in self._detail_frame.winfo_children():
