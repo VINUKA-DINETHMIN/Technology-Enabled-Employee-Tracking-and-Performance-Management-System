@@ -419,14 +419,7 @@ class EfficiencyPredictionService:
 
 
 
-    @staticmethod
-    def _mode_or_default(values: list[str], default: str) -> str:
-        if not values:
-            return default
-        counts: dict[str, int] = {}
-        for v in values:
-            counts[v] = counts.get(v, 0) + 1
-        return sorted(counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
+
 
     @staticmethod
     def _normalize_employee_id(value: str) -> str:
