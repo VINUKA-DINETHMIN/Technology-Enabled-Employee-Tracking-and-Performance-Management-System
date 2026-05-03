@@ -1968,17 +1968,7 @@ class AdminPanel(ctk.CTk):
             logger.exception("Failed to launch efficiency window")
             messagebox.showerror("Efficiency Window", f"Failed to launch efficiency window: {exc}")
 
-    def _open_baseline_window(self) -> None:
-        script_path = _PROJECT_ROOT / "C1_user_Behavioural_Baseline" / "dashboard.py"
-        if not script_path.exists():
-            messagebox.showerror("Baseline Viewer", f"Launcher not found: {script_path}")
-            return
-
-        try:
-            subprocess.Popen([sys.executable, str(script_path)], cwd=str(_PROJECT_ROOT))
-        except Exception as exc:
-            logger.exception("Failed to launch baseline viewer")
-            messagebox.showerror("Baseline Viewer", f"Failed to launch baseline viewer: {exc}")
+   
 
     def _refresh_live_grid(self) -> None:
         threading.Thread(target=self._fetch_live_grid, daemon=True).start()
