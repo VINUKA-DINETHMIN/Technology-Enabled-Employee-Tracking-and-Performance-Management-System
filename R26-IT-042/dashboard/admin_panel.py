@@ -1968,6 +1968,8 @@ class AdminPanel(ctk.CTk):
             logger.exception("Failed to launch efficiency window")
             messagebox.showerror("Efficiency Window", f"Failed to launch efficiency window: {exc}")
 
+
+    #basline window luncher
     def _open_baseline_window(self) -> None:
         script_path = _PROJECT_ROOT / "C1_user_Behavioural_Baseline" / "dashboard.py"
         if not script_path.exists():
