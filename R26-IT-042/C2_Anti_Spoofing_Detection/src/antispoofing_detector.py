@@ -213,7 +213,8 @@ class AntiSpoofingDetector:
             if not predictions:
                 return True, 0.0, "No frames captured"
 
-            # Average predictions
+            # Use a temporal consensus across multiple frames to reduce false positives.
+            # If the majority of sampled frames look real, the final verdict is real.
             avg_is_real = sum(p[0] for p in predictions) / len(predictions) >= 0.5
             avg_confidence = sum(p[1] for p in predictions) / len(predictions)
 
