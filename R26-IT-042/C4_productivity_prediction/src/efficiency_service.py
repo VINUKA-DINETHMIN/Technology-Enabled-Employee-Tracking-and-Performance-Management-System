@@ -441,6 +441,7 @@ class EfficiencyPredictionService:
     def _normalize_employee_id(value: str) -> str:
         return str(value or "").strip().lower()
 
+    # Cache keys are based on the database name and formatted period start,end datetimes 
     @staticmethod
     def _period_cache_key(value: Optional[datetime]) -> str:
         if value is None:
