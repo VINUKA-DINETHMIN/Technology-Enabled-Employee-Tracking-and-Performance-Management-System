@@ -417,6 +417,7 @@ class EfficiencyPredictionService:
 
         return ordered, stats
 
+    # Helper methods for data parsing, normalization, caching, and feature extraction.
     @staticmethod
     def _to_float(value, default: float = 0.0) -> float:
         try:
@@ -426,6 +427,7 @@ class EfficiencyPredictionService:
         except Exception:
             return default
 
+    # For categorical features, use the most common value or a default if no data is available.
     @staticmethod
     def _mode_or_default(values: list[str], default: str) -> str:
         if not values:
@@ -439,6 +441,7 @@ class EfficiencyPredictionService:
     def _normalize_employee_id(value: str) -> str:
         return str(value or "").strip().lower()
 
+    # Cache keys are based on the database name and formatted period start,end datetimes 
     @staticmethod
     def _period_cache_key(value: Optional[datetime]) -> str:
         if value is None:

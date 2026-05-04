@@ -62,7 +62,9 @@ class EfficiencyWindow(ctk.CTk):
         self._build()
         # Schedule initial refresh after 200 ms (startup delay)
         self.after(200, self._refresh)
-
+        
+    
+    #Build and layout the Employee Efficiency dashboard UI
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=18, pady=(16, 8))
@@ -207,6 +209,7 @@ class EfficiencyWindow(ctk.CTk):
         self._last_updated_var.set(f"Last updated: {now}")
         self._status_var.set(f"Read-only prediction completed for {len(rows)} employees.")
 
+    #rendering summary in static form
     def _render_summary(self, rows) -> None:
         total = len(rows)
         high = sum(1 for r in rows if r.predicted_label.lower() == "high")
