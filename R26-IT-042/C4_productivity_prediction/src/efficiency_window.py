@@ -300,18 +300,7 @@ class EfficiencyWindow(ctk.CTk):
         period_start, period_end = self._period_range()
         self._executor.submit(self._fetch_employee_report, employee_id, period_start, period_end)
 
-    def _fetch_employee_report(self, employee_id: str, period_start, period_end) -> None:
-        try:
-            report = self._service.get_employee_productivity_report(
-                self._db,
-                employee_id=employee_id,
-                period_start=period_start,
-                period_end=period_end,
-            )
-            self.after(0, lambda: self._show_employee_details(report, employee_id))
-        except Exception as exc:
-            logger.exception("Failed to build employee productivity report")
-            self.after(0, lambda: messagebox.showerror("Productivity Report", f"Failed to load report: {exc}"))
+    
 
     def _show_employee_details(self, report, employee_id: str) -> None:
         if report is None:
