@@ -157,6 +157,7 @@ class AntiSpoofingDetector:
 
             # Interpret
             # score close to 0.0 = Real, score close to 1.0 = Fake
+            # Confidence is the stronger side of the score distribution.
             confidence = max(score, 1.0 - score)
             is_real = score < _REAL_THRESHOLD
 
