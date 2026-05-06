@@ -82,6 +82,7 @@ class AntiSpoofingDetector:
             return True
 
         except ImportError:
+            # TensorFlow is optional here; the app can still run without anti-spoofing.
             logger.warning("TensorFlow not installed — anti-spoofing detection disabled.")
             return False
         except Exception as exc:
