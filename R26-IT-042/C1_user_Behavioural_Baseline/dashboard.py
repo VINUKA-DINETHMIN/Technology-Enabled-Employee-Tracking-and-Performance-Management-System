@@ -283,25 +283,7 @@ def build_employee_baselines(records):
     return baselines
 
 
-class BehavioralBaselineApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("C1 Behavioral Baselines")
-        self.geometry("1160x760")
-        self.minsize(1040, 680)
-        self.configure(fg_color=C_BG)
 
-        self.records = load_records()
-        self.baselines = build_employee_baselines(self.records)
-        self.selected_employee_id = None
-        self._row_frames = {}
-
-        self._build_layout()
-        self._render_summary()
-        self._render_employee_list()
-        if self.baselines:
-            first_id = next(iter(sorted(self.baselines.keys(), key=lambda eid: self.baselines[eid]["employee_name"])))
-            self.show_employee_detail(first_id)
 
     def _build_layout(self):
         header = ctk.CTkFrame(self, fg_color=C_CARD, corner_radius=0, height=68)
