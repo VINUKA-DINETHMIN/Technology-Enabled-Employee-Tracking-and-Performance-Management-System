@@ -319,8 +319,13 @@ class EfficiencyWindow(ctk.CTk):
             self._status_var.set("No report available for selected employee.")
             messagebox.showinfo("Productivity Report", f"No report data available for {employee_id} in this period.")
             return
-
         
+        # color based on predicted label
+        pred_color = {
+            "high": C_GREEN,
+            "medium": C_AMBER,
+            "low": C_RED,
+        }.get(str(report.predicted_label).lower(), C_TEXT)
 
         self._status_var.set(f"Report ready for {report.employee_id}.")
 
