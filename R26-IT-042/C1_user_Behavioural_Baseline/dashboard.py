@@ -343,19 +343,7 @@ class BehavioralBaselineApp(ctk.CTk):
         separator = ctk.CTkFrame(left_panel, height=1, fg_color=C_BORDER)
         separator.pack(fill="x", padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(
-            left_panel,
-            text="Employee Baseline Summary",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=C_TEXT,
-        ).pack(anchor="w", padx=16, pady=(0, 8))
-
-        self._list_scroll = ctk.CTkScrollableFrame(left_panel, fg_color="transparent", corner_radius=0)
-        self._list_scroll.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-
-        self._detail_frame = ctk.CTkScrollableFrame(right_panel, fg_color="transparent", corner_radius=0)
-        self._detail_frame.pack(fill="both", expand=True, padx=16, pady=16)
-
+        
     def _render_summary(self):
         for child in self._summary_frame.winfo_children():
             child.destroy()
