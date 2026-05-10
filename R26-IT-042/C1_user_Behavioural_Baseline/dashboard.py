@@ -440,7 +440,15 @@ class BehavioralBaselineApp(ctk.CTk):
         self._update_row_selection()
         self._render_detail_panel(self.baselines[employee_id])
 
-   
+    # Update the visual selection state of the employee list rows based on the currently selected employee
+    
+    def _update_row_selection(self):
+        for eid, frame in self._row_frames.items():
+            bg = "#1f2937" if eid == self.selected_employee_id else C_CARD
+            try:
+                frame.configure(fg_color=bg)
+            except Exception:
+                pass
 
     def _render_detail_panel(self, baseline):
         for child in self._detail_frame.winfo_children():
