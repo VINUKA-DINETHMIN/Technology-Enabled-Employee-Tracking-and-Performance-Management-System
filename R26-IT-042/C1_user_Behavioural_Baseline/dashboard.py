@@ -441,7 +441,7 @@ class BehavioralBaselineApp(ctk.CTk):
         self._render_detail_panel(self.baselines[employee_id])
 
     # Update the visual selection state of the employee list rows based on the currently selected employee
-
+    
     def _update_row_selection(self):
         for eid, frame in self._row_frames.items():
             bg = "#1f2937" if eid == self.selected_employee_id else C_CARD
@@ -506,4 +506,12 @@ class BehavioralBaselineApp(ctk.CTk):
             self.show_employee_detail(self.selected_employee_id)
 
 
+# Entry point to launch the behavioral baseline dashboard application
 
+def launch_baseline_viewer():
+    app = BehavioralBaselineApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    launch_baseline_viewer()
